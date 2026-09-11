@@ -70,3 +70,4 @@ export default function AuthGate() {
 
   return <LoginScreen onCredential={handleCredential} error={status === "error" ? error : ""} denied={status === "denied"} />;
 }
+
