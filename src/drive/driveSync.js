@@ -76,7 +76,7 @@ export async function searchFilesByName(token, name) {
   const params = new URLSearchParams({
     q: `name contains '${escaped}' and trashed = false`,
     spaces: "drive",
-    fields: "files(id,name,modifiedTime,driveId)",
+    fields: "files(id,name,modifiedTime,driveId,mimeType)",
     orderBy: "modifiedTime desc",
     pageSize: "15",
     corpora: "allDrives",
@@ -88,8 +88,25 @@ export async function searchFilesByName(token, name) {
   return data.files || [];
 }
 
-// Baixa el contingut binari d'un fitxer del Drive (per exemple, un .xlsx) com a ArrayBuffer.
-export async function downloadFileArrayBuffer(token, fileId) {
-  const res = await driveFetch(`${FILES_URL}/${fileId}?alt=media&supportsAllDrives=true`, token);
+// Format d'exportació a fer servir per a cada tipus de document natiu de Google (Sheets,
+// Docs...). Els fitxers .xlsx/.xls pujats de veritat NO passen per aquí — es baixen tal
+// qual amb alt=media, ja que ja són binaris.
+const GOOGLE_EXPORT_MIME = {
+  "application/vnd.google-apps.spreadsheet": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
+// Baixa el contingut d'un fitxer del Drive com a ArrayBuffer. Si és un Google Sheets natiu
+// (no un .xlsx pujat), el converteix ("exporta") a Excel abans de baixar-lo.
+export async function downloadFileArrayBuffer(token, file) {
+  const isGoogleNative = file.mimeType && file.mimeType.startsWith("application/vnd.google-apps.");
+  if (isGoogleNative) {
+    const exportMime = GOOGLE_EXPORT_MIME[file.mimeType];
+    if (!exportMime) {
+      throw new Error(`Aquest tipus de document de Google (${file.mimeType}) no es pot exportar a Excel.`);
+    }
+    const res = await driveFetch(`${FILES_URL}/${file.id}/export?mimeType=${encodeURIComponent(exportMime)}`, token);
+    return await res.arrayBuffer();
+  }
+  const res = await driveFetch(`${FILES_URL}/${file.id}?alt=media&supportsAllDrives=true`, token);
   return await res.arrayBuffer();
 }
