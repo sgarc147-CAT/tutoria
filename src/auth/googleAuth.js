@@ -37,13 +37,17 @@ export function loadGoogleScript() {
   });
 }
 
-// Demana un access token amb permís sobre Drive (drive.file). Cal cridar-ho després
-// del login, ja que és un pas d'autorització separat del d'identitat.
-export function requestDriveToken() {
+// Demana un access token amb permís sobre Drive. Cal cridar-ho després del login, ja que
+// és un pas d'autorització separat del d'identitat. Amb silent=true, intenta renovar-lo
+// sense mostrar cap finestra emergent (funciona si la persona ja ha donat consentiment
+// abans en aquesta mateixa sessió del navegador) — és el que fem servir per renovar la
+// sessió amb el Drive quan caduca, sense interrompre la feina de l'usuari.
+export function requestDriveToken(silent = false) {
   return new Promise((resolve, reject) => {
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
       scope: DRIVE_SCOPE,
+      prompt: silent ? "" : "consent",
       callback: (resp) => {
         if (resp.error) reject(new Error(resp.error));
         else resolve(resp.access_token);
