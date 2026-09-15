@@ -10,7 +10,9 @@ async function driveFetch(url, token, options = {}) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Error de Drive (${res.status}): ${text}`);
+    const err = new Error(`Error de Drive (${res.status}): ${text}`);
+    err.status = res.status; // permet detectar sessió caducada (401) i renovar-la sense molestar l'usuari
+    throw err;
   }
   return res;
 }
@@ -66,6 +68,50 @@ export async function saveData(token, dataObj) {
     headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
     body,
   });
+}
+
+// Fusiona dues llistes (alumnat o empreses) pel seu "id": si un element només existeix en
+// una banda, es conserva; si existeix a totes dues, guanya el que tingui un "lastModified"
+// més recent. Així, quan dues persones treballen alhora sobre el mateix fitxer compartit,
+// mai es perd un registre que l'altra hagi afegit o tocat més tard.
+export function mergeListById(remoteList, localList) {
+  const remote = Array.isArray(remoteList) ? remoteList : [];
+  const local = Array.isArray(localList) ? localList : [];
+  const map = new Map();
+  remote.forEach((r) => map.set(r.id, r));
+  local.forEach((l) => {
+    const r = map.get(l.id);
+    if (!r) { map.set(l.id, l); return; }
+    const rTime = r.lastModified || "";
+    const lTime = l.lastModified || "";
+    map.set(l.id, lTime >= rTime ? l : r);
+  });
+  return Array.from(map.values());
+}
+
+// Fusiona el document sencer: alumnat i empreses es combinen registre a registre (veure
+// mergeListById); la resta de camps (configuració, calendari...) es queden amb el valor
+// local, ja que canvien molt menys sovint i el risc de xoc és molt més baix.
+export function mergeSharedData(remote, local) {
+  if (!remote) return local;
+  return {
+    ...local,
+    students: mergeListById(remote.students, local.students),
+    companies: mergeListById(remote.companies, local.companies),
+  };
+}
+
+// Llegeix el fitxer compartit i hi fusiona les dades locals abans de desar-lo, per no
+// perdre mai canvis fets per una altra persona mentre tu també hi treballaves.
+// IMPORTANT: si la lectura prèvia falla per qualsevol motiu, NO es continua desant a
+// cegues (això podria sobreescriure el fitxer només amb les dades locals i esborrar
+// canvis d'una altra persona) — es deixa que l'error pugi cap amunt perquè aquest cicle
+// de desat simplement no faci res i es torni a intentar més tard.
+export async function saveDataMerged(token, localData) {
+  const remote = await loadData(token);
+  const merged = mergeSharedData(remote, localData);
+  await saveData(token, merged);
+  return merged;
 }
 
 // Cerca fitxers accessibles pel compte connectat: el seu propi Drive, fitxers compartits
