@@ -851,7 +851,7 @@ function stampChanged(prevList, nextList) {
 
 // Fusiona dues llistes pel seu "id": conserva els registres que només existeixin en una
 // banda, i quan existeixen a totes dues es queda amb el de "lastModified" més recent.
-function mergeListById(remoteList, localList) {
+function mergeListById(remoteList, localList, deletedMap = {}) {
   const remote = Array.isArray(remoteList) ? remoteList : [];
   const local = Array.isArray(localList) ? localList : [];
   const map = new Map();
@@ -863,7 +863,21 @@ function mergeListById(remoteList, localList) {
     const lTime = l.lastModified || "";
     map.set(l.id, lTime >= rTime ? l : r);
   });
+  Object.entries(deletedMap || {}).forEach(([id, deletedAt]) => {
+    const item = map.get(id);
+    if (item && deletedAt >= (item.lastModified || "")) map.delete(id);
+  });
   return Array.from(map.values());
+}
+
+// Fusiona dos mapes d'eliminacions {id: dataHora}: es queda amb la marca més recent de
+// les dues bandes per a cada id. Les eliminacions mai s'obliden.
+function mergeDeletedMap(remote, local) {
+  const out = { ...(remote || {}) };
+  Object.entries(local || {}).forEach(([id, t]) => {
+    if (!out[id] || t > out[id]) out[id] = t;
+  });
+  return out;
 }
 
 // Compta les hores de pràctiques dia a dia dins d'un període (en lloc de fer una
@@ -929,8 +943,16 @@ export default function App() {
 
   const [tab, setTab] = useState("dashboard");
   const [activeGroup, setActiveGroup] = useState(initial.activeGroup || "ADM2");
-  const [students, setStudents] = useState(initial.students || MOCK_STUDENTS);
-  const [companies, setCompanies] = useState(initial.companies || MOCK_COMPANIES);
+  const [students, setStudents] = useState(() => {
+    const list = initial.students || MOCK_STUDENTS;
+    const deleted = initial.deletedStudentIds || {};
+    return list.filter((s) => !deleted[s.id]);
+  });
+  const [companies, setCompanies] = useState(() => {
+    const list = initial.companies || MOCK_COMPANIES;
+    const deleted = initial.deletedCompanyIds || {};
+    return list.filter((c) => !deleted[c.id]);
+  });
   const [raWeights, setRaWeights] = useState(() => {
     if (initial.raWeights) return initial.raWeights;
     const w = {};
@@ -950,29 +972,60 @@ export default function App() {
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [holidays, setHolidays] = useState(initial.holidays || []); // dates "AAAA-MM-DD" marcades com a festiu/vacances
   const [saveStatus, setSaveStatus] = useState("idle"); // idle | pending | saving | saved | error
+  // Registre d'eliminacions definitives {id: dataHora}: viatja amb la resta de dades perquè
+  // cap fusió posterior pugui ressuscitar un alumne/empresa que s'ha esborrat de veritat.
+  const [deletedStudentIds, setDeletedStudentIds] = useState(initial.deletedStudentIds || {});
+  const [deletedCompanyIds, setDeletedCompanyIds] = useState(initial.deletedCompanyIds || {});
 
   // Manté un registre de l'últim estat sincronitzat amb el Drive, per poder detectar quins
   // alumnes/empreses concrets han canviat (i marcar-los amb lastModified) sense haver de
   // tocar cada funció que els modifica.
   const lastSyncedRef = useRef({ students: initial.students || MOCK_STUDENTS, companies: initial.companies || MOCK_COMPANIES });
 
+  // Sempre conté les dades més recents (s'actualitza a cada render). Cal perquè runSave()
+  // pugui reintentar-se ell mateix amb dades fresques quan hi ha desats en cua, en lloc de
+  // fer servir dades "congelades" del moment en què es va cridar la primera vegada.
+  const latestRef = useRef(null);
+  useEffect(() => {
+    latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds };
+  });
+
+  // Evita que dues operacions de Drive (el desat automàtic i l'actualització periòdica)
+  // s'executin alhora: si una ja està en marxa, l'altra es posposa fins que acabi, en lloc
+  // de competir-hi i acabar aplicant un resultat vell per sobre d'un de més nou.
+  const savingRef = useRef(false);
+  const dirtyRef = useRef(false);
+
   // Executa el desat real: fusiona amb el Drive i actualitza l'estat local amb el resultat.
   async function runSave() {
     if (typeof window === "undefined" || !window.__SAVE_DATA__) return;
+    if (savingRef.current) { dirtyRef.current = true; return; }
+    savingRef.current = true;
     setSaveStatus("saving");
-    const stampedStudents = stampChanged(lastSyncedRef.current.students, students);
-    const stampedCompanies = stampChanged(lastSyncedRef.current.companies, companies);
-    const payload = { activeGroup, students: stampedStudents, companies: stampedCompanies, raWeights, moduleCourse, classTemplate, schedules, holidays };
-    const merged = await window.__SAVE_DATA__(payload);
-    const finalStudents = merged ? merged.students : stampedStudents;
-    const finalCompanies = merged ? merged.companies : stampedCompanies;
-    lastSyncedRef.current = { students: finalStudents, companies: finalCompanies };
-    if (merged) {
-      setStudents(finalStudents);
-      setCompanies(finalCompanies);
-      setSaveStatus("saved");
-    } else {
-      setSaveStatus("error");
+    try {
+      const cur = latestRef.current;
+      const stampedStudents = stampChanged(lastSyncedRef.current.students, cur.students);
+      const stampedCompanies = stampChanged(lastSyncedRef.current.companies, cur.companies);
+      const payload = { ...cur, students: stampedStudents, companies: stampedCompanies };
+      const merged = await window.__SAVE_DATA__(payload);
+      const finalStudents = merged ? merged.students : stampedStudents;
+      const finalCompanies = merged ? merged.companies : stampedCompanies;
+      lastSyncedRef.current = { students: finalStudents, companies: finalCompanies };
+      if (merged) {
+        setStudents(finalStudents);
+        setCompanies(finalCompanies);
+        if (merged.deletedStudentIds) setDeletedStudentIds(merged.deletedStudentIds);
+        if (merged.deletedCompanyIds) setDeletedCompanyIds(merged.deletedCompanyIds);
+        setSaveStatus("saved");
+      } else {
+        setSaveStatus("error");
+      }
+    } finally {
+      savingRef.current = false;
+      if (dirtyRef.current) {
+        dirtyRef.current = false;
+        runSave();
+      }
     }
   }
 
@@ -983,7 +1036,7 @@ export default function App() {
     setSaveStatus("pending");
     const t = setTimeout(() => { runSave(); }, 800);
     return () => clearTimeout(t);
-  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays]);
+  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds]);
 
   // Avisa abans de tancar la pestanya/navegador si encara hi ha canvis sense confirmar que
   // s'han desat — precisament per evitar perdre feina si es tanca l'ordinador de sobte.
@@ -1001,7 +1054,7 @@ export default function App() {
   // Descarrega una còpia de seguretat local de totes les dades actuals, independent del
   // Drive — útil per fer-ho abans de tancar l'ordinador, com a xarxa de seguretat extra.
   function downloadBackup() {
-    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays };
+    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1016,18 +1069,28 @@ export default function App() {
 
   // Refresca periòdicament amb el Drive (i també en tornar a la pestanya) per incorporar
   // canvis d'una altra persona encara que tu no hagis tocat res des que vas obrir l'app.
+  // Abans de fusionar, marca amb un "ara mateix" qualsevol canvi local encara no desat
+  // (per exemple, una eliminació feta fa un segon), perquè no perdi davant d'una versió
+  // més antiga del Drive que encara no en sap res.
   useEffect(() => {
     if (typeof window === "undefined" || !window.__DRIVE_PULL__) return;
     async function pull() {
+      if (savingRef.current) return; // no interfereixis amb un desat en curs
       const remote = await window.__DRIVE_PULL__();
       if (!remote) return;
+      const mergedDeletedStudents = mergeDeletedMap(remote.deletedStudentIds, latestRef.current.deletedStudentIds);
+      const mergedDeletedCompanies = mergeDeletedMap(remote.deletedCompanyIds, latestRef.current.deletedCompanyIds);
+      setDeletedStudentIds(mergedDeletedStudents);
+      setDeletedCompanyIds(mergedDeletedCompanies);
       setStudents((prev) => {
-        const merged = mergeListById(remote.students, prev);
+        const stampedPrev = stampChanged(lastSyncedRef.current.students, prev);
+        const merged = mergeListById(remote.students, stampedPrev, mergedDeletedStudents);
         lastSyncedRef.current = { ...lastSyncedRef.current, students: merged };
         return merged;
       });
       setCompanies((prev) => {
-        const merged = mergeListById(remote.companies, prev);
+        const stampedPrev = stampChanged(lastSyncedRef.current.companies, prev);
+        const merged = mergeListById(remote.companies, stampedPrev, mergedDeletedCompanies);
         lastSyncedRef.current = { ...lastSyncedRef.current, companies: merged };
         return merged;
       });
@@ -1269,6 +1332,7 @@ export default function App() {
       return next;
     });
     setCompanies((prev) => prev.map((c) => ({ ...c, assignats: c.assignats.filter((sid) => sid !== id) })));
+    setDeletedStudentIds((prev) => ({ ...prev, [id]: new Date().toISOString() }));
   }
   function trashCompany(id) {
     setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, trashedAt: new Date().toISOString(), assignats: [] } : c)));
@@ -1278,6 +1342,7 @@ export default function App() {
   }
   function deleteCompanyForever(id) {
     setCompanies((prev) => prev.filter((c) => c.id !== id));
+    setDeletedCompanyIds((prev) => ({ ...prev, [id]: new Date().toISOString() }));
   }
 
   const selectedStudent = students.find((s) => s.id === selectedStudentId);
