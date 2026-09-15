@@ -4,11 +4,22 @@ import LoginScreen from "./auth/LoginScreen";
 import { decodeIdToken, isEmailAllowed, loadGoogleScript, requestDriveToken } from "./auth/googleAuth";
 import { loadData, saveDataMerged, searchFilesByName, downloadFileArrayBuffer } from "./drive/driveSync";
 
+// Evita que una operació es quedi esperant per sempre (per exemple, una finestra de Google
+// que ha quedat oberta darrere d'una altra i ningú ha clicat "Continua").
+function withTimeout(promise, ms, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(message || "Temps d'espera exhaurit.")), ms)),
+  ]);
+}
+
 export default function AuthGate() {
   const [status, setStatus] = useState("loading-script"); // loading-script | signed-out | denied | authorizing | loading-data | ready | error
   const [user, setUser] = useState(null);
   const [error, setError] = useState("");
   const [driveWarning, setDriveWarning] = useState("");
+  const [needsReconnect, setNeedsReconnect] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
   const tokenRef = useRef(null);
 
   useEffect(() => {
@@ -19,23 +30,43 @@ export default function AuthGate() {
 
   // Executa una operació de Drive amb el testimoni actual; si la sessió ha caducat (401),
   // en demana un de nou en silenci (sense finestra emergent) i ho torna a provar una
-  // vegada. Només si això també falla es mostra un avís perquè la persona torni a fer login.
+  // vegada. Si la renovació triga massa (per exemple, una finestra de Google penjada
+  // esperant un clic) o falla, s'atura al cap de 15 segons i es mostra un botó explícit
+  // de "Reconnecta" en lloc de quedar-se esperant en silenci per sempre.
   async function withDriveRetry(fn) {
     try {
       return await fn(tokenRef.current);
     } catch (e) {
       if (e && e.status === 401) {
         try {
-          const fresh = await requestDriveToken(true);
+          const fresh = await withTimeout(requestDriveToken(true), 15000, "La renovació silenciosa de la sessió ha trigat massa.");
           tokenRef.current = fresh;
           setDriveWarning("");
+          setNeedsReconnect(false);
           return await fn(fresh);
         } catch (e2) {
-          setDriveWarning("La sessió amb el Drive ha caducat i no s'ha pogut renovar sola. Torna a carregar la pàgina i inicia sessió de nou per no perdre cap canvi.");
+          setDriveWarning("La sessió amb el Drive ha caducat. Clica \"Reconnecta\" per continuar sense perdre cap canvi.");
+          setNeedsReconnect(true);
           throw e2;
         }
       }
       throw e;
+    }
+  }
+
+  // Acció explícita per si la renovació automàtica no ha funcionat: demana un testimoni
+  // nou (amb el diàleg complet de Google si cal) i el fa servir a partir d'ara.
+  async function reconnect() {
+    setReconnecting(true);
+    try {
+      const fresh = await requestDriveToken(false);
+      tokenRef.current = fresh;
+      setDriveWarning("");
+      setNeedsReconnect(false);
+    } catch (e) {
+      setDriveWarning("No s'ha pogut reconnectar amb el Drive: " + (e.message || "error desconegut") + ". Prova de refrescar la pàgina (Ctrl+Shift+R).");
+    } finally {
+      setReconnecting(false);
     }
   }
 
@@ -63,7 +94,9 @@ export default function AuthGate() {
           .then((merged) => { setDriveWarning(""); return merged; })
           .catch((e) => {
             console.error("No s'ha pogut desar al Drive:", e);
-            setDriveWarning("No s'han pogut desar els últims canvis al Drive (problema de connexió o de permisos). Comprova la connexió; els canvis es reintentaran automàticament.");
+            if (!(e && e.status === 401)) {
+              setDriveWarning("No s'han pogut desar els últims canvis al Drive (problema de connexió o de permisos). Comprova la connexió; els canvis es reintentaran automàticament.");
+            }
             return null;
           });
       // Permet a l'App refrescar-se periòdicament amb el que hi hagi al Drive, sense
@@ -89,8 +122,16 @@ export default function AuthGate() {
           {user?.email} · dades desades al teu Drive
         </div>
         {driveWarning && (
-          <div className="fixed top-12 right-3 z-50 max-w-sm text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md shadow-sm">
-            {driveWarning}
+          <div className="fixed top-12 right-3 z-50 max-w-sm text-xs text-red-700 bg-red-50 border border-red-200 px-3 py-2 rounded-md shadow-sm space-y-2">
+            <p>{driveWarning}</p>
+            {needsReconnect && (
+              <button
+                onClick={reconnect} disabled={reconnecting}
+                className="w-full px-2 py-1.5 rounded-md bg-red-600 text-white text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+              >
+                {reconnecting ? "Reconnectant..." : "Reconnecta amb el Drive"}
+              </button>
+            )}
           </div>
         )}
         <App />

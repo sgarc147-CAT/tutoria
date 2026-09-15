@@ -1007,7 +1007,11 @@ export default function App() {
       const stampedStudents = stampChanged(lastSyncedRef.current.students, cur.students);
       const stampedCompanies = stampChanged(lastSyncedRef.current.companies, cur.companies);
       const payload = { ...cur, students: stampedStudents, companies: stampedCompanies };
-      const merged = await window.__SAVE_DATA__(payload);
+      // Xarxa de seguretat: si per qualsevol motiu el desat no respon en 20s (per exemple,
+      // una finestra de reconnexió amb Google esperant que hi cliquis), es dona per fallit
+      // en lloc de deixar l'aplicació bloquejada per sempre.
+      const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 20000));
+      const merged = await Promise.race([window.__SAVE_DATA__(payload), timeout]);
       const finalStudents = merged ? merged.students : stampedStudents;
       const finalCompanies = merged ? merged.companies : stampedCompanies;
       lastSyncedRef.current = { students: finalStudents, companies: finalCompanies };
