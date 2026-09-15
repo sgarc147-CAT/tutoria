@@ -72,9 +72,11 @@ export async function saveData(token, dataObj) {
 
 // Fusiona dues llistes (alumnat o empreses) pel seu "id": si un element només existeix en
 // una banda, es conserva; si existeix a totes dues, guanya el que tingui un "lastModified"
-// més recent. Així, quan dues persones treballen alhora sobre el mateix fitxer compartit,
-// mai es perd un registre que l'altra hagi afegit o tocat més tard.
-export function mergeListById(remoteList, localList) {
+// més recent. deletedMap és un mapa {id: dataHoraEnQuèEsVaEsborrar} — qualsevol id que hi
+// aparegui amb una marca més recent que l'última modificació coneguda de l'element
+// s'exclou del resultat, encara que l'altra banda encara el tingui (així una eliminació
+// real mai la ressuscita una fusió posterior).
+export function mergeListById(remoteList, localList, deletedMap = {}) {
   const remote = Array.isArray(remoteList) ? remoteList : [];
   const local = Array.isArray(localList) ? localList : [];
   const map = new Map();
@@ -86,18 +88,38 @@ export function mergeListById(remoteList, localList) {
     const lTime = l.lastModified || "";
     map.set(l.id, lTime >= rTime ? l : r);
   });
+  Object.entries(deletedMap || {}).forEach(([id, deletedAt]) => {
+    const item = map.get(id);
+    if (item && deletedAt >= (item.lastModified || "")) map.delete(id);
+  });
   return Array.from(map.values());
 }
 
+// Fusiona dos mapes d'eliminacions {id: dataHora}: per a cada id, es queda amb la marca
+// més recent de les dues bandes. Les eliminacions mai s'obliden (no hi ha "recreació"
+// automàtica d'un registre esborrat).
+export function mergeDeletedMap(remote = {}, local = {}) {
+  const out = { ...(remote || {}) };
+  Object.entries(local || {}).forEach(([id, t]) => {
+    if (!out[id] || t > out[id]) out[id] = t;
+  });
+  return out;
+}
+
 // Fusiona el document sencer: alumnat i empreses es combinen registre a registre (veure
-// mergeListById); la resta de camps (configuració, calendari...) es queden amb el valor
-// local, ja que canvien molt menys sovint i el risc de xoc és molt més baix.
+// mergeListById), respectant sempre les eliminacions fetes a qualsevol banda; la resta de
+// camps (configuració, calendari...) es queden amb el valor local, ja que canvien molt
+// menys sovint i el risc de xoc és molt més baix.
 export function mergeSharedData(remote, local) {
   if (!remote) return local;
+  const deletedStudentIds = mergeDeletedMap(remote.deletedStudentIds, local.deletedStudentIds);
+  const deletedCompanyIds = mergeDeletedMap(remote.deletedCompanyIds, local.deletedCompanyIds);
   return {
     ...local,
-    students: mergeListById(remote.students, local.students),
-    companies: mergeListById(remote.companies, local.companies),
+    students: mergeListById(remote.students, local.students, deletedStudentIds),
+    companies: mergeListById(remote.companies, local.companies, deletedCompanyIds),
+    deletedStudentIds,
+    deletedCompanyIds,
   };
 }
 
