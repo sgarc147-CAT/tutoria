@@ -5,7 +5,8 @@ import {
   UploadCloud, CheckCircle2, XCircle, AlertTriangle, Clock, ChevronRight, ChevronDown,
   ChevronLeft, X, Plus, Trash2, Save, Search, GraduationCap, BriefcaseBusiness,
   CalendarDays, CalendarOff, Percent, ClipboardList, ArrowLeft, Footprints, Bus,
-  MessageCircle, MessageSquare, ShieldAlert, CalendarClock, Cake, Download, RefreshCw
+  MessageCircle, MessageSquare, ShieldAlert, CalendarClock, Cake, Download, RefreshCw,
+  Mail, Handshake, PhoneCall
 } from "lucide-react";
 
 /* ---------------------------------------------------------------------- */
@@ -262,6 +263,19 @@ function makeEmptyNotes(prefill) {
   return notes;
 }
 
+// Estats possibles de negociació amb una empresa, en l'ordre habitual del procés.
+const NEGOTIATION_STATUSES = [
+  { id: "pendent", label: "Pendent de contactar", tone: "slate" },
+  { id: "enviat", label: "Correu enviat", tone: "sky" },
+  { id: "esperant", label: "Esperant resposta", tone: "sky" },
+  { id: "resposta", label: "Resposta rebuda", tone: "orange" },
+  { id: "confirmada", label: "Confirmada", tone: "green" },
+  { id: "no_disponible", label: "No disponible", tone: "red" },
+];
+function negotiationStatusInfo(id) {
+  return NEGOTIATION_STATUSES.find((s) => s.id === id) || NEGOTIATION_STATUSES[0];
+}
+
 const MOCK_COMPANIES = [
   {
     id: "c1", nom: "Gestoria Terradas SL",
@@ -270,6 +284,11 @@ const MOCK_COMPANIES = [
     tutorNom: "Elena Terradas", tutorTelefon: "937001123", tutorEmail: "elena@terradas.example",
     regim: "Presencial", places: 2, assignats: ["s1"],
     activitats: ["1.1", "1.4", "6.1", "6.2"],
+    negotiationStatus: "confirmada",
+    contacts: [
+      { id: "ct1", data: "2026-09-02", tipus: "Correu enviat", notes: "Sol·licitud de places i horari per al 2n trimestre." },
+      { id: "ct2", data: "2026-09-05", tipus: "Correu rebut", notes: "Confirmen 2 places, horari de matí (8-15h)." },
+    ],
   },
   {
     id: "c2", nom: "Vallès Consultors",
@@ -278,6 +297,10 @@ const MOCK_COMPANIES = [
     tutorNom: "Jordi Camps", tutorTelefon: "937112233", tutorEmail: "jcamps@vallesconsultors.example",
     regim: "Híbrid", places: 1, assignats: ["s3"],
     activitats: ["1.2", "2.1", "2.3"],
+    negotiationStatus: "esperant",
+    contacts: [
+      { id: "ct3", data: "2026-09-10", tipus: "Correu enviat", notes: "Consulta sobre disponibilitat per al proper curs." },
+    ],
   },
   {
     id: "c3", nom: "Ferreteria Industrial Bosch",
@@ -286,6 +309,8 @@ const MOCK_COMPANIES = [
     tutorNom: "Anna Bosch", tutorTelefon: "937223344", tutorEmail: "abosch@ferreteriabosch.example",
     regim: "Presencial", places: 3, assignats: [],
     activitats: [],
+    negotiationStatus: "pendent",
+    contacts: [],
   },
 ];
 
@@ -880,10 +905,9 @@ function mergeDeletedMap(remote, local) {
   return out;
 }
 
-// Compara dues llistes pel seu contingut real (id + lastModified de cadascú), no per si
-// són el mateix objecte de JavaScript. mergeListById sempre construeix un array nou encara
-// que el contingut sigui idèntic; sense aquesta comparació, cada desat generaria un array
-// "diferent" (per referència) i tornaria a disparar-se ell mateix indefinidament.
+// Compara dues llistes pel seu contingut real (id + lastModified), no per si són el
+// mateix objecte de JavaScript — necessari perquè mergeListById sempre construeix un
+// array nou encara que el contingut sigui idèntic.
 function sameRecords(a, b) {
   if (a.length !== b.length) return false;
   const bMap = new Map(b.map((x) => [x.id, x.lastModified || ""]));
@@ -1002,21 +1026,18 @@ export default function App() {
   // tocar cada funció que els modifica.
   const lastSyncedRef = useRef({ students: initial.students || MOCK_STUDENTS, companies: initial.companies || MOCK_COMPANIES });
 
-  // Sempre conté les dades més recents (s'actualitza a cada render). Cal perquè runSave()
-  // pugui reintentar-se ell mateix amb dades fresques quan hi ha desats en cua, en lloc de
-  // fer servir dades "congelades" del moment en què es va cridar la primera vegada.
+  // Sempre conté les dades més recents (s'actualitza a cada render), perquè runSave() es
+  // pugui reintentar amb dades fresques quan hi ha desats en cua.
   const latestRef = useRef(null);
   useEffect(() => {
     latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds };
   });
 
   // Evita que dues operacions de Drive (el desat automàtic i l'actualització periòdica)
-  // s'executin alhora: si una ja està en marxa, l'altra es posposa fins que acabi, en lloc
-  // de competir-hi i acabar aplicant un resultat vell per sobre d'un de més nou.
+  // s'executin alhora.
   const savingRef = useRef(false);
   const dirtyRef = useRef(false);
 
-  // Executa el desat real: fusiona amb el Drive i actualitza l'estat local amb el resultat.
   async function runSave() {
     if (typeof window === "undefined" || !window.__SAVE_DATA__) return;
     if (savingRef.current) { dirtyRef.current = true; return; }
@@ -1027,19 +1048,12 @@ export default function App() {
       const stampedStudents = stampChanged(lastSyncedRef.current.students, cur.students);
       const stampedCompanies = stampChanged(lastSyncedRef.current.companies, cur.companies);
       const payload = { ...cur, students: stampedStudents, companies: stampedCompanies };
-      // Xarxa de seguretat: si per qualsevol motiu el desat no respon en 20s (per exemple,
-      // una finestra de reconnexió amb Google esperant que hi cliquis), es dona per fallit
-      // en lloc de deixar l'aplicació bloquejada per sempre.
       const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 20000));
       const merged = await Promise.race([window.__SAVE_DATA__(payload), timeout]);
       const finalStudents = merged ? merged.students : stampedStudents;
       const finalCompanies = merged ? merged.companies : stampedCompanies;
       lastSyncedRef.current = { students: finalStudents, companies: finalCompanies };
       if (merged) {
-        // Només actualitza l'estat (i, per tant, només torna a disparar-se un altre cicle
-        // de desat) si el resultat fusionat aporta res de veritat nou respecte al que
-        // acabem d'enviar — si no, seguiria fent-se un bucle etern sense fi cada vegada
-        // que es completa un desat.
         if (!sameRecords(finalStudents, stampedStudents)) setStudents(finalStudents);
         if (!sameRecords(finalCompanies, stampedCompanies)) setCompanies(finalCompanies);
         if (merged.deletedStudentIds && !sameMap(merged.deletedStudentIds, cur.deletedStudentIds)) setDeletedStudentIds(merged.deletedStudentIds);
@@ -1057,8 +1071,6 @@ export default function App() {
     }
   }
 
-  // Desa automàticament al Drive (amb un petit debounce) cada vegada que canvien les dades
-  // persistents. "Desa ara" (a la barra lateral) fa exactament el mateix, immediatament.
   useEffect(() => {
     if (typeof window === "undefined" || !window.__SAVE_DATA__) return;
     setSaveStatus("pending");
@@ -1066,8 +1078,6 @@ export default function App() {
     return () => clearTimeout(t);
   }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds]);
 
-  // Avisa abans de tancar la pestanya/navegador si encara hi ha canvis sense confirmar que
-  // s'han desat — precisament per evitar perdre feina si es tanca l'ordinador de sobte.
   useEffect(() => {
     function handleBeforeUnload(e) {
       if (saveStatus === "pending" || saveStatus === "saving" || saveStatus === "error") {
@@ -1079,31 +1089,12 @@ export default function App() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [saveStatus]);
 
-  // Descarrega una còpia de seguretat local de totes les dades actuals, independent del
-  // Drive — útil per fer-ho abans de tancar l'ordinador, com a xarxa de seguretat extra.
-  function downloadBackup() {
-    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
-    a.href = url;
-    a.download = `copia-seguretat-gestio-adm2-lomloe-${stamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
   // Refresca periòdicament amb el Drive (i també en tornar a la pestanya) per incorporar
-  // canvis d'una altra persona encara que tu no hagis tocat res des que vas obrir l'app.
-  // Abans de fusionar, marca amb un "ara mateix" qualsevol canvi local encara no desat
-  // (per exemple, una eliminació feta fa un segon), perquè no perdi davant d'una versió
-  // més antiga del Drive que encara no en sap res.
+  // canvis d'una altra persona. (Sense Drive connectat, aquest bloc no fa res.)
   useEffect(() => {
     if (typeof window === "undefined" || !window.__DRIVE_PULL__) return;
     async function pull() {
-      if (savingRef.current) return; // no interfereixis amb un desat en curs
+      if (savingRef.current) return;
       const remote = await window.__DRIVE_PULL__();
       if (!remote) return;
       const mergedDeletedStudents = mergeDeletedMap(remote.deletedStudentIds, latestRef.current.deletedStudentIds);
@@ -1128,6 +1119,20 @@ export default function App() {
     document.addEventListener("visibilitychange", onVisible);
     return () => { clearInterval(interval); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
+
+  function downloadBackup() {
+    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+    a.href = url;
+    a.download = `copia-seguretat-gestio-adm2-lomloe-${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 
   function changeGroup(g) {
     setActiveGroup(g);
@@ -1523,6 +1528,11 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     return properIso >= avuiIso && properIso <= en30diesIso;
   }).length;
 
+  const negociacioEsperant = companies.filter((c) => c.negotiationStatus === "esperant" || c.negotiationStatus === "enviat").length;
+  const negociacioRespostaPendent = companies.filter((c) => c.negotiationStatus === "resposta").length;
+  const negociacioConfirmada = companies.filter((c) => c.negotiationStatus === "confirmada").length;
+  const negociacioPendentContactar = companies.filter((c) => !c.negotiationStatus || c.negotiationStatus === "pendent").length;
+
   return (
     <div>
       <h1 className="text-xl font-semibold text-slate-800 mb-1">Dashboard del grup {activeGroup}</h1>
@@ -1539,6 +1549,14 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         <StatTile label="Places adjudicades" value={`${placesAdjudicades}/${placesTotal}`} tone="green" icon={CheckCircle2} />
       </div>
       <p className="text-xs text-slate-400 mb-6">Les places de pràctiques i adjudicades compten totes les empreses col·laboradores (compartides entre grups).</p>
+
+      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Negociacions amb empreses</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <StatTile label="Pendents de contactar" value={negociacioPendentContactar} tone="slate" icon={Mail} />
+        <StatTile label="Esperant resposta" value={negociacioEsperant} tone="sky" icon={Clock} />
+        <StatTile label="Resposta rebuda (per revisar)" value={negociacioRespostaPendent} tone="orange" icon={AlertTriangle} />
+        <StatTile label="Confirmades" value={negociacioConfirmada} tone="green" icon={Handshake} />
+      </div>
 
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Seguiment tutorial</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -2985,9 +3003,19 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
 /* 12. EMPRESES                                                           */
 /* ---------------------------------------------------------------------- */
 
-function CompanyCard({ company: c, students, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity }) {
+function CompanyCard({ company: c, students, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact }) {
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
   const selectedCount = (c.activitats || []).length;
+  const status = negotiationStatusInfo(c.negotiationStatus);
+  const contacts = [...(c.contacts || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
+  const [newContact, setNewContact] = useState({ data: "", tipus: "Correu enviat", notes: "" });
+
+  function submitContact() {
+    if (!newContact.data) return;
+    onAddContact({ id: "ct" + Math.random().toString(36).slice(2, 8), ...newContact });
+    setNewContact({ data: "", tipus: "Correu enviat", notes: "" });
+  }
+
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -2999,6 +3027,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
           </div>
         </button>
         <div className="flex items-center gap-2">
+          <Badge tone={status.tone}>{status.label}</Badge>
           <Badge tone="sky">{c.regim}</Badge>
           <Badge tone={c.assignats.length >= c.places ? "orange" : "slate"}>{c.assignats.length}/{c.places} places</Badge>
           <Badge tone="slate">{selectedCount}/{totalActivitats} activitats</Badge>
@@ -3011,6 +3040,24 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
 
       {expanded && (
         <div className="space-y-5 mt-4 border-t border-slate-100 pt-4">
+          <div>
+            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Estat de la negociació</p>
+            <div className="flex flex-wrap gap-2">
+              {NEGOTIATION_STATUSES.map((s) => (
+                <button
+                  key={s.id} onClick={() => onUpdate({ negotiationStatus: s.id })}
+                  className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                    c.negotiationStatus === s.id || (!c.negotiationStatus && s.id === "pendent")
+                      ? "bg-sky-500 text-white border-sky-500"
+                      : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <div>
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Dades de l'empresa</p>
             <div className="grid sm:grid-cols-3 gap-3">
@@ -3027,6 +3074,12 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
               <label className="block">
                 <span className="text-xs text-slate-400">Places</span>
                 <input type="number" min="1" value={c.places} onChange={(e) => onUpdate({ places: Number(e.target.value) })}
+                  className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
+              </label>
+              <label className="block sm:col-span-3">
+                <span className="text-xs text-slate-400">Horari proposat / observacions</span>
+                <textarea value={c.horariProposat || ""} onChange={(e) => onUpdate({ horariProposat: e.target.value })} rows={2}
+                  placeholder="Per exemple: matins de 8 a 15h, de dilluns a divendres..."
                   className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
               </label>
             </div>
@@ -3047,6 +3100,52 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
               <Field label="Telèfon" value={c.tutorTelefon} onChange={(v) => onUpdate({ tutorTelefon: v })} />
               <Field label="Correu electrònic" value={c.tutorEmail} onChange={(v) => onUpdate({ tutorEmail: v })} />
             </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Mail size={13} /> Seguiment de la negociació</p>
+            <Card className="p-4 mb-3">
+              <div className="grid sm:grid-cols-3 gap-3 mb-3">
+                <label className="block">
+                  <span className="text-xs text-slate-400">Data</span>
+                  <input type="date" value={newContact.data} onChange={(e) => setNewContact({ ...newContact, data: e.target.value })}
+                    className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-slate-400">Tipus</span>
+                  <select value={newContact.tipus} onChange={(e) => setNewContact({ ...newContact, tipus: e.target.value })}
+                    className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-300">
+                    <option>Correu enviat</option>
+                    <option>Correu rebut</option>
+                    <option>Trucada</option>
+                    <option>Reunió</option>
+                    <option>Altres</option>
+                  </select>
+                </label>
+                <Field label="Notes" value={newContact.notes} onChange={(v) => setNewContact({ ...newContact, notes: v })} />
+              </div>
+              <button onClick={submitContact} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 text-white text-xs font-medium hover:bg-sky-600">
+                <Plus size={13} /> Afegeix contacte
+              </button>
+            </Card>
+            {contacts.length === 0 ? (
+              <p className="text-xs text-slate-400">Encara no hi ha cap contacte registrat.</p>
+            ) : (
+              <div className="space-y-2">
+                {contacts.map((ct) => (
+                  <div key={ct.id} className="flex items-start justify-between gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
+                    <div className="flex items-start gap-2">
+                      {ct.tipus === "Trucada" ? <PhoneCall size={13} className="text-sky-500 mt-0.5" /> : <Mail size={13} className="text-sky-500 mt-0.5" />}
+                      <div>
+                        <p className="text-xs font-medium text-slate-700">{ct.tipus} <span className="text-slate-400 font-normal">— {ct.data}</span></p>
+                        {ct.notes && <p className="text-xs text-slate-500 mt-0.5">{ct.notes}</p>}
+                      </div>
+                    </div>
+                    <button onClick={() => onDeleteContact(ct.id)} className="text-slate-300 hover:text-red-500 shrink-0"><Trash2 size={12} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div>
@@ -3116,6 +3215,8 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
       responsableNom: "", responsableCarrec: "",
       tutorNom: "", tutorTelefon: "", tutorEmail: "",
       activitats: [],
+      negotiationStatus: "pendent",
+      contacts: [],
     }]);
     setDraft({ nom: "", regim: "Presencial", places: 1 });
     setAdding(false);
@@ -3134,6 +3235,14 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
         : [...(c.activitats || []), itemId];
       return { ...c, activitats };
     }));
+  }
+
+  function addCompanyContact(id, contact) {
+    setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, contacts: [...(c.contacts || []), contact] } : c)));
+  }
+
+  function deleteCompanyContact(id, contactId) {
+    setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, contacts: (c.contacts || []).filter((ct) => ct.id !== contactId) } : c)));
   }
 
   function toggleAssign(companyId, studentId) {
@@ -3192,6 +3301,8 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
             onRemove={() => onTrashCompany(c.id)}
             onToggleAssign={(studentId) => toggleAssign(c.id, studentId)}
             onToggleActivity={(itemId) => toggleActivity(c.id, itemId)}
+            onAddContact={(contact) => addCompanyContact(c.id, contact)}
+            onDeleteContact={(contactId) => deleteCompanyContact(c.id, contactId)}
           />
         ))}
       </div>
