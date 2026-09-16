@@ -880,6 +880,26 @@ function mergeDeletedMap(remote, local) {
   return out;
 }
 
+// Compara dues llistes pel seu contingut real (id + lastModified de cadascú), no per si
+// són el mateix objecte de JavaScript. mergeListById sempre construeix un array nou encara
+// que el contingut sigui idèntic; sense aquesta comparació, cada desat generaria un array
+// "diferent" (per referència) i tornaria a disparar-se ell mateix indefinidament.
+function sameRecords(a, b) {
+  if (a.length !== b.length) return false;
+  const bMap = new Map(b.map((x) => [x.id, x.lastModified || ""]));
+  return a.every((x) => bMap.has(x.id) && bMap.get(x.id) === (x.lastModified || ""));
+}
+
+// Igual que sameRecords però per als mapes d'eliminacions {id: dataHora}.
+function sameMap(a, b) {
+  const aObj = a || {};
+  const bObj = b || {};
+  const aKeys = Object.keys(aObj);
+  const bKeys = Object.keys(bObj);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => aObj[k] === bObj[k]);
+}
+
 // Compta les hores de pràctiques dia a dia dins d'un període (en lloc de fer una
 // mitjana per setmanes), excloent sempre els caps de setmana i qualsevol data marcada
 // com a festiu/vacances al calendari. Retorna també els conflictes amb l'horari de 1r.
@@ -1016,10 +1036,14 @@ export default function App() {
       const finalCompanies = merged ? merged.companies : stampedCompanies;
       lastSyncedRef.current = { students: finalStudents, companies: finalCompanies };
       if (merged) {
-        setStudents(finalStudents);
-        setCompanies(finalCompanies);
-        if (merged.deletedStudentIds) setDeletedStudentIds(merged.deletedStudentIds);
-        if (merged.deletedCompanyIds) setDeletedCompanyIds(merged.deletedCompanyIds);
+        // Només actualitza l'estat (i, per tant, només torna a disparar-se un altre cicle
+        // de desat) si el resultat fusionat aporta res de veritat nou respecte al que
+        // acabem d'enviar — si no, seguiria fent-se un bucle etern sense fi cada vegada
+        // que es completa un desat.
+        if (!sameRecords(finalStudents, stampedStudents)) setStudents(finalStudents);
+        if (!sameRecords(finalCompanies, stampedCompanies)) setCompanies(finalCompanies);
+        if (merged.deletedStudentIds && !sameMap(merged.deletedStudentIds, cur.deletedStudentIds)) setDeletedStudentIds(merged.deletedStudentIds);
+        if (merged.deletedCompanyIds && !sameMap(merged.deletedCompanyIds, cur.deletedCompanyIds)) setDeletedCompanyIds(merged.deletedCompanyIds);
         setSaveStatus("saved");
       } else {
         setSaveStatus("error");
@@ -1084,19 +1108,19 @@ export default function App() {
       if (!remote) return;
       const mergedDeletedStudents = mergeDeletedMap(remote.deletedStudentIds, latestRef.current.deletedStudentIds);
       const mergedDeletedCompanies = mergeDeletedMap(remote.deletedCompanyIds, latestRef.current.deletedCompanyIds);
-      setDeletedStudentIds(mergedDeletedStudents);
-      setDeletedCompanyIds(mergedDeletedCompanies);
+      if (!sameMap(mergedDeletedStudents, latestRef.current.deletedStudentIds)) setDeletedStudentIds(mergedDeletedStudents);
+      if (!sameMap(mergedDeletedCompanies, latestRef.current.deletedCompanyIds)) setDeletedCompanyIds(mergedDeletedCompanies);
       setStudents((prev) => {
         const stampedPrev = stampChanged(lastSyncedRef.current.students, prev);
         const merged = mergeListById(remote.students, stampedPrev, mergedDeletedStudents);
         lastSyncedRef.current = { ...lastSyncedRef.current, students: merged };
-        return merged;
+        return sameRecords(merged, prev) ? prev : merged;
       });
       setCompanies((prev) => {
         const stampedPrev = stampChanged(lastSyncedRef.current.companies, prev);
         const merged = mergeListById(remote.companies, stampedPrev, mergedDeletedCompanies);
         lastSyncedRef.current = { ...lastSyncedRef.current, companies: merged };
-        return merged;
+        return sameRecords(merged, prev) ? prev : merged;
       });
     }
     const interval = setInterval(pull, 45000);
