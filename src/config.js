@@ -14,6 +14,7 @@ export const ALLOWED_EMAILS = [
   "cherrer7@xtec.cat",
   "sgarc147@iesesteveterradas.cat",
   "sgarc147@xtec.cat",
+  "fserra9@xtec.cat",
 ];
 
 // Si el vols obrir a tothom d'un domini concret (p. ex. tot el professorat de
