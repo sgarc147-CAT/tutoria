@@ -1,4 +1,4 @@
-import { GOOGLE_CLIENT_ID, ALLOWED_EMAILS, ALLOWED_DOMAIN, DRIVE_SCOPE } from "../config";
+import { GOOGLE_CLIENT_ID, ALLOWED_EMAILS, ALLOWED_DOMAIN, DRIVE_SCOPE, GMAIL_SCOPE, FORMS_BODY_SCOPE, FORMS_RESPONSES_SCOPE } from "../config";
 
 // Decodifica el payload d'un ID token JWT de Google (no en verifica la signatura —
 // això és suficient per decidir què mostrar a la pantalla en una aplicació 100%
@@ -37,16 +37,17 @@ export function loadGoogleScript() {
   });
 }
 
-// Demana un access token amb permís sobre Drive. Cal cridar-ho després del login, ja que
-// és un pas d'autorització separat del d'identitat. Amb silent=true, intenta renovar-lo
-// sense mostrar cap finestra emergent (funciona si la persona ja ha donat consentiment
-// abans en aquesta mateixa sessió del navegador) — és el que fem servir per renovar la
-// sessió amb el Drive quan caduca, sense interrompre la feina de l'usuari.
+// Demana un access token amb permís sobre Drive i Gmail (només lectura) de cop, en una
+// sola autorització. Cal cridar-ho després del login, ja que és un pas d'autorització
+// separat del d'identitat. Amb silent=true, intenta renovar-lo sense mostrar cap finestra
+// emergent (funciona si la persona ja ha donat consentiment abans en aquesta mateixa
+// sessió del navegador) — és el que fem servir per renovar la sessió quan caduca, sense
+// interrompre la feina de l'usuari.
 export function requestDriveToken(silent = false) {
   return new Promise((resolve, reject) => {
     const client = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CLIENT_ID,
-      scope: DRIVE_SCOPE,
+      scope: `${DRIVE_SCOPE} ${GMAIL_SCOPE} ${FORMS_BODY_SCOPE} ${FORMS_RESPONSES_SCOPE}`,
       prompt: silent ? "" : "consent",
       callback: (resp) => {
         if (resp.error) reject(new Error(resp.error));
