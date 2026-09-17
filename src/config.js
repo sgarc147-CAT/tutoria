@@ -14,7 +14,6 @@ export const ALLOWED_EMAILS = [
   "cherrer7@xtec.cat",
   "sgarc147@iesesteveterradas.cat",
   "sgarc147@xtec.cat",
-  "fserra9@xtec.cat",
 ];
 
 // Si el vols obrir a tothom d'un domini concret (p. ex. tot el professorat de
@@ -41,3 +40,14 @@ export const DRIVE_FILE_ID = "1tNZmyGssL4jImBaRLMqmp5XSmJNeznqx";
 //   compartits per una altra persona). Cal fer servir aquest si utilitzes
 //   DRIVE_FILE_ID per compartir un mateix fitxer entre diverses persones.
 export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+
+// Àmbit per llegir el Gmail (només lectura — mai pot enviar, esborrar ni modificar res).
+// Es fa servir per mostrar, a la fitxa de cada empresa, els correus dels últims 6 mesos
+// relacionats amb el seu domini (pestanya "Empreses" → "Safata d'entrada").
+export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+
+// Àmbits per crear el formulari de preferències d'activitats i llegir-ne les respostes.
+// forms.body permet crear/editar formularis (mai llegeix res que no hagi creat l'app);
+// forms.responses.readonly permet llegir només les respostes, mai modificar-les.
+export const FORMS_BODY_SCOPE = "https://www.googleapis.com/auth/forms.body";
+export const FORMS_RESPONSES_SCOPE = "https://www.googleapis.com/auth/forms.responses.readonly";

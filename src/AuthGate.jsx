@@ -2,7 +2,9 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import App from "./App";
 import LoginScreen from "./auth/LoginScreen";
 import { decodeIdToken, isEmailAllowed, loadGoogleScript, requestDriveToken } from "./auth/googleAuth";
-import { loadData, saveDataMerged, searchFilesByName, downloadFileArrayBuffer } from "./drive/driveSync";
+import { loadData, saveDataMerged, searchFilesByName, downloadFileArrayBuffer, uploadDocument } from "./drive/driveSync";
+import { searchEmailsByDomain } from "./gmail/gmailSync";
+import { createActivityForm, fetchFormResponses } from "./forms/formsSync";
 
 // Evita que una operació es quedi esperant per sempre (per exemple, una finestra de Google
 // que ha quedat oberta darrere d'una altra i ningú ha clicat "Continua").
@@ -107,6 +109,18 @@ export default function AuthGate() {
       // d'avaluació) per sincronitzar-hi notes, sense sortir de l'aplicació.
       window.__DRIVE_SEARCH__ = (name) => withDriveRetry((token) => searchFilesByName(token, name));
       window.__DRIVE_DOWNLOAD__ = (file) => withDriveRetry((token) => downloadFileArrayBuffer(token, file));
+      // Permet a l'App cercar, a la safata de Gmail (només lectura), els correus dels
+      // últims mesos relacionats amb el domini d'una empresa.
+      window.__GMAIL_SEARCH__ = (domain, monthsBack) => withDriveRetry((token) => searchEmailsByDomain(token, domain, monthsBack));
+      // Permet a l'App pujar documents (justificants d'exempció, documentació FCT...) al
+      // Drive de l'usuari i desar-ne només la referència (nom + enllaç) a la fitxa.
+      window.__DRIVE_UPLOAD_DOC__ = (file) => withDriveRetry((token) => uploadDocument(token, file));
+      // Permet a l'App crear el formulari de preferències d'activitats i llegir-ne les
+      // respostes (només lectura de respostes; l'app només pot crear/editar formularis
+      // que ella mateixa hagi creat).
+      window.__FORMS_CREATE__ = (activityPlan, groupLabel) => withDriveRetry((token) => createActivityForm(token, activityPlan, groupLabel));
+      window.__FORMS_FETCH_RESPONSES__ = (formId, nameQuestionId, categoryQuestionIds) =>
+        withDriveRetry((token) => fetchFormResponses(token, formId, nameQuestionId, categoryQuestionIds));
 
       setStatus("ready");
     } catch (e) {
