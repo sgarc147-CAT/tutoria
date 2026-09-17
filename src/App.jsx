@@ -271,7 +271,7 @@ const NEGOTIATION_STATUSES = [
   { id: "pendent", label: "Pendent de contactar", tone: "slate" },
   { id: "contactada", label: "Contactada, esperant vacants", tone: "sky" },
   { id: "vacants_confirmades", label: "Vacants confirmades", tone: "sky" },
-  { id: "homologada", label: "Homologada amb pla d'activitats", tone: "green" },
+  { id: "homologada", label: "Homologada", tone: "green" },
   { id: "no_disponible", label: "No disponible", tone: "red" },
 ];
 function negotiationStatusInfo(id) {
@@ -524,7 +524,7 @@ function normalizeDateValue(value) {
 }
 
 function mapRow(rawRow) {
-  const out = { emailInstitut: "", notes: makeEmptyNotes({}), notaEmpresa: null, autoritzaInfoPares: false, interviews: [], incidents: [], nassValid: false, documents: {} };
+  const out = { emailInstitut: "", notes: makeEmptyNotes({}), notaEmpresa: null, autoritzaInfoPares: false, interviews: [], incidents: [], nassValid: false, documents: {}, activityPreferences: [], minutsDesitjats: null };
   const keys = Object.keys(rawRow);
   HEADER_MAP.forEach(({ field, labels }) => {
     const key = keys.find((k) => labels.some((l) => normalize(k).includes(l)));
@@ -879,7 +879,7 @@ async function getWalkingTime(originAddress, destinationAddress) {
   const data = await res.json();
   if (!data.routes || !data.routes.length) throw new Error("No s'ha trobat cap ruta a peu entre aquestes adreces.");
   const route = data.routes[0];
-  return { duration: formatDuration(route.duration), distance: formatDistance(route.distance) };
+  return { duration: formatDuration(route.duration), distance: formatDistance(route.distance), minutes: Math.round(route.duration / 60) };
 }
 
 function transitMapsUrl(originAddress, destinationAddress) {
@@ -1351,6 +1351,7 @@ export default function App() {
       notes: makeEmptyNotes({}), notaEmpresa: null,
       interviews: [], incidents: [],
       nassValid: false, documents: {}, terminacioAnticipada: null,
+      activityPreferences: [], minutsDesitjats: null,
     };
     setStudents((prev) => [...prev, student]);
     setSchedules((prev) => ({ ...prev, [id]: { reduccio: 0, periods: [{ id: "p1", dataInici: "", dataFinal: "", ticks: makeEmptyGrid() }] } }));
@@ -2350,6 +2351,7 @@ function StudentDetail({ student, status, raWeights, moduleCourse, schedule, sch
           companies={companies} assignedCompanyId={assignedCompanyId} onAssignCompany={onAssignCompany}
           onUpdateSchedule={onUpdateSchedule} onAddPeriod={onAddPeriod} onRemovePeriod={onRemovePeriod}
           onUpdatePeriod={onUpdatePeriod} onToggleTick={onToggleTick} onUpdateNotaEmpresa={onUpdateNotaEmpresa}
+          onUpdateStudent={onUpdateStudent}
         />
       )}
     </div>
@@ -3068,7 +3070,7 @@ function WeeklyGrid({ ticks, classGrid, onToggle }) {
   );
 }
 
-function TravelTimeCard({ originAddress, destinationAddress }) {
+function TravelTimeCard({ originAddress, destinationAddress, desiredMinutes, onUpdateDesiredMinutes }) {
   const [status, setStatus] = useState("idle"); // idle | loading | done | error
   const [walking, setWalking] = useState(null);
   const [error, setError] = useState("");
@@ -3095,6 +3097,8 @@ function TravelTimeCard({ originAddress, destinationAddress }) {
     );
   }
 
+  const exceedsDesired = desiredMinutes && walking && walking.minutes != null && walking.minutes > Number(desiredMinutes);
+
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
@@ -3117,17 +3121,68 @@ function TravelTimeCard({ originAddress, destinationAddress }) {
       <p className="text-xs text-slate-400 mb-3">De "{originAddress}" a "{destinationAddress}"</p>
       {status === "error" && <p className="text-xs text-red-600">{error}</p>}
       {status === "done" && walking && (
-        <div className="flex items-center gap-2 text-sm text-slate-700">
+        <div className="flex items-center gap-2 text-sm text-slate-700 mb-3">
           <Footprints size={16} className="text-sky-500" />
           <span>{walking.duration} <span className="text-slate-400">({walking.distance})</span></span>
+          {exceedsDesired && <Badge tone="orange" icon={AlertTriangle}>Per sobre del desitjat</Badge>}
+          {desiredMinutes && walking.minutes != null && !exceedsDesired && <Badge tone="green" icon={CheckCircle2}>Dins del desitjat</Badge>}
         </div>
       )}
+      <label className="flex items-center gap-2 text-xs text-slate-500 border-t border-slate-100 pt-3">
+        Minuts de trajecte desitjats (màxim acceptable):
+        <input
+          type="number" min="0" value={desiredMinutes || ""} onChange={(e) => onUpdateDesiredMinutes(e.target.value ? Number(e.target.value) : null)}
+          placeholder="p. ex. 30"
+          className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-sky-300"
+        />
+        min
+      </label>
       <p className="text-[11px] text-slate-300 mt-3">Temps a peu calculat amb OpenStreetMap, gratuït i sense cap clau. El transport públic s'obre directament a Google Maps amb la ruta ja preparada.</p>
     </Card>
   );
 }
 
-function PracticumSection({ student, schedule, scheduleStatus, classGrid, companies, assignedCompanyId, onAssignCompany, onUpdateSchedule, onAddPeriod, onRemovePeriod, onUpdatePeriod, onToggleTick, onUpdateNotaEmpresa }) {
+function ActivityPreferencesCard({ student, onUpdateStudent }) {
+  const prefs = student.activityPreferences || [];
+  const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
+
+  function toggle(itemId) {
+    const next = prefs.includes(itemId) ? prefs.filter((p) => p !== itemId) : [...prefs, itemId];
+    onUpdateStudent({ activityPreferences: next });
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <p className="text-sm font-medium text-slate-700">Preferències d'activitats de l'alumne/a</p>
+        <Badge tone="slate">{prefs.length}/{totalActivitats} activitats</Badge>
+      </div>
+      <p className="text-xs text-slate-400 mb-3">
+        Marca les activitats del pla que l'alumne/a preferiria fer, per tenir-ho en compte a l'hora de negociar amb l'empresa.
+      </p>
+      <div className="space-y-3">
+        {ACTIVITY_PLAN.map((cat) => (
+          <div key={cat.id} className="border border-slate-100 rounded-lg p-3">
+            <p className="text-xs font-medium text-slate-600 mb-2">{cat.id}. {cat.title}</p>
+            <div className="space-y-1.5">
+              {cat.items.map((item) => (
+                <label key={item.id} className="flex items-start gap-2 text-xs text-slate-600">
+                  <input
+                    type="checkbox" checked={prefs.includes(item.id)} onChange={() => toggle(item.id)}
+                    className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-sky-500 focus:ring-sky-300 shrink-0"
+                  />
+                  <span><span className="text-slate-400">{item.id}</span> {item.text}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function PracticumSection({ student, schedule, scheduleStatus, classGrid, companies, assignedCompanyId, onAssignCompany, onUpdateSchedule, onAddPeriod, onRemovePeriod, onUpdatePeriod, onToggleTick, onUpdateNotaEmpresa, onUpdateStudent }) {
   const assignedCompany = companies.find((c) => c.id === assignedCompanyId);
   const studentAddress = buildAddress(student.adreca, student.cp, student.municipi, student.pais);
   const companyAddress = assignedCompany ? buildAddress(assignedCompany.adreca) : "";
@@ -3142,18 +3197,34 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
         >
           <option value="">Sense assignar</option>
           {companies.map((c) => {
+            const isCurrentlyAssigned = c.id === assignedCompanyId;
+            const isReady = c.negotiationStatus === "homologada";
             const placesLeft = c.places - c.assignats.filter((id) => id !== student.id).length;
-            const full = placesLeft <= 0 && c.id !== assignedCompanyId;
+            const full = placesLeft <= 0;
+            const disabled = !isCurrentlyAssigned && (!isReady || full);
+            let label;
+            if (!isReady && !isCurrentlyAssigned) label = `${c.nom} (no homologada)`;
+            else if (full && !isCurrentlyAssigned) label = `${c.nom} (sense places)`;
+            else label = `${c.nom} (${placesLeft} places lliures)`;
             return (
-              <option key={c.id} value={c.id} disabled={full}>
-                {c.nom} {full ? "(sense places)" : `(${placesLeft} places lliures)`}
+              <option key={c.id} value={c.id} disabled={disabled}>
+                {label}
               </option>
             );
           })}
         </select>
+        <p className="text-xs text-slate-400 mt-2">Només es poden assignar empreses amb l'estat de negociació "Homologada" i amb places lliures.</p>
       </Card>
 
-      {assignedCompany && <TravelTimeCard originAddress={studentAddress} destinationAddress={companyAddress} />}
+      {assignedCompany && (
+        <TravelTimeCard
+          originAddress={studentAddress} destinationAddress={companyAddress}
+          desiredMinutes={student.minutsDesitjats}
+          onUpdateDesiredMinutes={(v) => onUpdateStudent({ minutsDesitjats: v })}
+        />
+      )}
+
+      <ActivityPreferencesCard student={student} onUpdateStudent={onUpdateStudent} />
 
       <Card className="p-5">
         <p className="text-sm font-medium text-slate-700 mb-1">Nota d'estada a l'empresa</p>
@@ -3548,29 +3619,45 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
                 })}
               </div>
             )}
-            <p className="text-xs text-slate-400 mb-1.5">{students.some((s) => c.assignats.includes(s.id)) ? "Assigna'n un altre:" : "Assigna alumnat:"}</p>
-            <div className="flex flex-wrap gap-2">
-              {students.filter((s) => !c.assignats.includes(s.id)).map((s) => {
-                const elsewhere = companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
-                const full = c.assignats.length >= c.places;
-                return (
-                  <button
-                    key={s.id} onClick={() => onToggleAssign(s.id)}
-                    disabled={full}
-                    title={elsewhere ? "Assignat a una altra empresa — es reassignarà aquí" : full ? "Sense places lliures" : ""}
-                    className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                      full ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
-                    }`}
-                  >
-                    {s.nom} {s.cognoms} <span className="opacity-60">({s.grup || "ADM2"})</span>{elsewhere ? " ↺" : ""}
-                  </button>
-                );
-              })}
-            </div>
+            {c.negotiationStatus !== "homologada" ? (
+              <p className="text-xs text-orange-600 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2">
+                Aquesta empresa encara no està homologada — no s'hi pot assignar alumnat fins que l'estat de negociació sigui "Homologada".
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-slate-400 mb-1.5">{students.some((s) => c.assignats.includes(s.id)) ? "Assigna'n un altre:" : "Assigna alumnat:"}</p>
+                <div className="flex flex-wrap gap-2">
+                  {students.filter((s) => !c.assignats.includes(s.id)).map((s) => {
+                    const elsewhere = companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
+                    const full = c.assignats.length >= c.places;
+                    return (
+                      <button
+                        key={s.id} onClick={() => onToggleAssign(s.id)}
+                        disabled={full}
+                        title={elsewhere ? "Assignat a una altra empresa — es reassignarà aquí" : full ? "Sense places lliures" : ""}
+                        className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                          full ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
+                        }`}
+                      >
+                        {s.nom} {s.cognoms} <span className="opacity-60">({s.grup || "ADM2"})</span>{elsewhere ? " ↺" : ""}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
 
           <div>
-            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Pla d'activitats</p>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">Pla d'activitats</p>
+              {c.planActivitatsUpdatedAt ? (
+                <Badge tone="slate">Actualitzat el {new Date(c.planActivitatsUpdatedAt).toLocaleDateString("ca")}</Badge>
+              ) : (
+                <Badge tone="orange">Encara no rebut</Badge>
+              )}
+            </div>
+            <p className="text-xs text-slate-400 -mt-1 mb-3">Independent de l'estat d'homologació — pot anar canviant, actualitza-ho quan l'empresa te'l reenviï.</p>
             <div className="space-y-3">
               {ACTIVITY_PLAN.map((cat) => (
                 <div key={cat.id} className="border border-slate-100 rounded-lg p-3">
@@ -3629,7 +3716,7 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
       const activitats = (c.activitats || []).includes(itemId)
         ? c.activitats.filter((a) => a !== itemId)
         : [...(c.activitats || []), itemId];
-      return { ...c, activitats };
+      return { ...c, activitats, planActivitatsUpdatedAt: new Date().toISOString() };
     }));
   }
 
