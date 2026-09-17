@@ -263,19 +263,23 @@ function makeEmptyNotes(prefill) {
   return notes;
 }
 
-// Estats possibles de negociació amb una empresa, en l'ordre habitual del procés.
-// Estats de negociació amb una empresa (fins que està llesta per acollir alumnat).
+// Fites de negociació amb una empresa: no són excloents entre si (una empresa pot estar
+// "contactada" i "amb vacants confirmades" i "homologada" alhora, cadascuna assolida en
+// un moment diferent). "No disponible" és un tic apart, independent de la resta.
 // El que passa DESPRÉS amb cada alumne concret (currículum, confirmació, conveni amb
 // les 4 signatures) es fa un cop assignat, a ASSIGNMENT_STAGES.
-const NEGOTIATION_STATUSES = [
-  { id: "pendent", label: "Pendent de contactar", tone: "slate" },
-  { id: "contactada", label: "Contactada, esperant vacants", tone: "sky" },
-  { id: "vacants_confirmades", label: "Vacants confirmades", tone: "sky" },
-  { id: "homologada", label: "Homologada", tone: "green" },
-  { id: "no_disponible", label: "No disponible", tone: "red" },
+const NEGOTIATION_MILESTONES = [
+  { id: "contactada", label: "Contactada" },
+  { id: "vacantsConfirmades", label: "Vacants confirmades" },
+  { id: "homologada", label: "Homologada" },
 ];
-function negotiationStatusInfo(id) {
-  return NEGOTIATION_STATUSES.find((s) => s.id === id) || NEGOTIATION_STATUSES[0];
+// Retorna la fita més avançada assolida (per mostrar-la com a insígnia resumida a la
+// capçalera plegada de la fitxa), o "Pendent de contactar" si encara no n'hi ha cap.
+function companyProgressBadge(c) {
+  if (c.homologada) return { label: "Homologada", tone: "green" };
+  if (c.vacantsConfirmades) return { label: "Vacants confirmades", tone: "sky" };
+  if (c.contactada) return { label: "Contactada", tone: "sky" };
+  return { label: "Pendent de contactar", tone: "slate" };
 }
 
 // Etapes del procés, ja per a un alumne concret assignat a l'empresa: des que se li envia
@@ -331,7 +335,7 @@ const MOCK_COMPANIES = [
     tutorNom: "Elena Terradas", tutorTelefon: "937001123", tutorEmail: "elena@terradas.example",
     regim: "Presencial", places: 2, assignats: ["s1"],
     activitats: ["1.1", "1.4", "6.1", "6.2"],
-    negotiationStatus: "confirmada",
+    contactada: true, vacantsConfirmades: true, homologada: true, noDisponible: false,
     contacts: [
       { id: "ct1", data: "2026-09-02", tipus: "Correu enviat", notes: "Sol·licitud de places i horari per al 2n trimestre." },
       { id: "ct2", data: "2026-09-05", tipus: "Correu rebut", notes: "Confirmen 2 places, horari de matí (8-15h)." },
@@ -344,7 +348,7 @@ const MOCK_COMPANIES = [
     tutorNom: "Jordi Camps", tutorTelefon: "937112233", tutorEmail: "jcamps@vallesconsultors.example",
     regim: "Híbrid", places: 1, assignats: ["s3"],
     activitats: ["1.2", "2.1", "2.3"],
-    negotiationStatus: "esperant",
+    contactada: true, vacantsConfirmades: false, homologada: false, noDisponible: false,
     contacts: [
       { id: "ct3", data: "2026-09-10", tipus: "Correu enviat", notes: "Consulta sobre disponibilitat per al proper curs." },
     ],
@@ -356,7 +360,7 @@ const MOCK_COMPANIES = [
     tutorNom: "Anna Bosch", tutorTelefon: "937223344", tutorEmail: "abosch@ferreteriabosch.example",
     regim: "Presencial", places: 3, assignats: [],
     activitats: [],
-    negotiationStatus: "pendent",
+    contactada: false, vacantsConfirmades: false, homologada: false, noDisponible: false,
     contacts: [],
   },
 ];
@@ -1571,8 +1575,12 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   const assignedIds = new Set(companies.flatMap((c) => c.assignats));
   const fentPractiques = students.filter((s) => assignedIds.has(s.id)).length;
   const senseAssignar = total - fentPractiques;
-  const placesTotal = companies.reduce((sum, c) => sum + c.places, 0);
-  const placesAdjudicades = companies.reduce((sum, c) => sum + c.assignats.length, 0);
+  // Només compten com a places reals les de les empreses ja homologades — mentre no ho
+  // estiguin, no hi ha cap plaça confirmada de veritat, encara que hi hagi un número
+  // orientatiu apuntat a la fitxa.
+  const homologatedCompanies = companies.filter((c) => c.homologada);
+  const placesTotal = homologatedCompanies.reduce((sum, c) => sum + c.places, 0);
+  const placesAdjudicades = homologatedCompanies.reduce((sum, c) => sum + c.assignats.length, 0);
 
   const avuiIso = toIsoDate(new Date());
   const incidenciesObertes = students.reduce((sum, s) => sum + (s.incidents || []).filter((n) => !n.resolt).length, 0);
@@ -1590,10 +1598,11 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     return properIso >= avuiIso && properIso <= en30diesIso;
   }).length;
 
-  const negociacioEsperant = companies.filter((c) => c.negotiationStatus === "contactada").length;
-  const negociacioVacantsConfirmades = companies.filter((c) => c.negotiationStatus === "vacants_confirmades").length;
-  const negociacioHomologada = companies.filter((c) => c.negotiationStatus === "homologada").length;
-  const negociacioPendentContactar = companies.filter((c) => !c.negotiationStatus || c.negotiationStatus === "pendent").length;
+  const negociacioEsperant = companies.filter((c) => c.contactada && !c.vacantsConfirmades).length;
+  const negociacioVacantsConfirmades = companies.filter((c) => c.vacantsConfirmades && !c.homologada).length;
+  const negociacioHomologada = companies.filter((c) => c.homologada).length;
+  const negociacioPendentContactar = companies.filter((c) => !c.contactada).length;
+  const negociacioNoDisponible = companies.filter((c) => c.noDisponible).length;
   const conveniPendentSignatures = companies.reduce((sum, c) => {
     const statuses = Object.values(c.assignmentStatus || {});
     return sum + statuses.filter((as) => as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean)).length;
@@ -1614,7 +1623,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         <StatTile label="Places de pràctiques" value={placesTotal} tone="slate" icon={Building2} />
         <StatTile label="Places adjudicades" value={`${placesAdjudicades}/${placesTotal}`} tone="green" icon={CheckCircle2} />
       </div>
-      <p className="text-xs text-slate-400 mb-6">Les places de pràctiques i adjudicades compten totes les empreses col·laboradores (compartides entre grups).</p>
+      <p className="text-xs text-slate-400 mb-6">Les places de pràctiques i adjudicades només compten empreses homologades (compartides entre grups) — les que encara estan en negociació no hi sumen.</p>
 
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Negociacions amb empreses</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -1622,6 +1631,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         <StatTile label="Esperant vacants" value={negociacioEsperant} tone="sky" icon={Clock} />
         <StatTile label="Vacants confirmades" value={negociacioVacantsConfirmades} tone="sky" icon={CheckCircle2} />
         <StatTile label="Homologades" value={negociacioHomologada} tone="green" icon={Handshake} />
+        <StatTile label="No disponibles" value={negociacioNoDisponible} tone={negociacioNoDisponible > 0 ? "red" : "slate"} icon={XCircle} />
       </div>
       {conveniPendentSignatures > 0 && (
         <div className="mb-8 -mt-4">
@@ -3198,7 +3208,7 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
           <option value="">Sense assignar</option>
           {companies.map((c) => {
             const isCurrentlyAssigned = c.id === assignedCompanyId;
-            const isReady = c.negotiationStatus === "homologada";
+            const isReady = !!c.homologada;
             const placesLeft = c.places - c.assignats.filter((id) => id !== student.id).length;
             const full = placesLeft <= 0;
             const disabled = !isCurrentlyAssigned && (!isReady || full);
@@ -3429,7 +3439,7 @@ function CompanyInbox({ company, onAddContact }) {
 function CompanyCard({ company: c, students, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
   const selectedCount = (c.activitats || []).length;
-  const status = negotiationStatusInfo(c.negotiationStatus);
+  const status = companyProgressBadge(c);
   const contacts = [...(c.contacts || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
   const [newContact, setNewContact] = useState({ data: "", tipus: "Correu enviat", notes: "" });
 
@@ -3451,6 +3461,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
         </button>
         <div className="flex items-center gap-2">
           <Badge tone={status.tone}>{status.label}</Badge>
+          {c.noDisponible && <Badge tone="red">No disponible</Badge>}
           <Badge tone="sky">{c.regim}</Badge>
           <Badge tone={c.assignats.length >= c.places ? "orange" : "slate"}>{c.assignats.length}/{c.places} places</Badge>
           <Badge tone="slate">{selectedCount}/{totalActivitats} activitats</Badge>
@@ -3465,20 +3476,34 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
         <div className="space-y-5 mt-4 border-t border-slate-100 pt-4">
           <div>
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Estat de la negociació</p>
-            <div className="flex flex-wrap gap-2">
-              {NEGOTIATION_STATUSES.map((s) => (
-                <button
-                  key={s.id} onClick={() => onUpdate({ negotiationStatus: s.id })}
-                  className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
-                    c.negotiationStatus === s.id || (!c.negotiationStatus && s.id === "pendent")
-                      ? "bg-sky-500 text-white border-sky-500"
-                      : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
+            <p className="text-xs text-slate-400 mb-2">Marca cada fita assolida — no cal seguir un ordre estricte, i pots tenir-ne diverses marcades alhora.</p>
+            <div className="flex flex-wrap gap-3 mb-2">
+              {NEGOTIATION_MILESTONES.map((m) => (
+                <label
+                  key={m.id}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs border cursor-pointer transition-colors ${
+                    c[m.id] ? "bg-sky-500 text-white border-sky-500" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
                   }`}
                 >
-                  {s.label}
-                </button>
+                  <input
+                    type="checkbox" checked={!!c[m.id]} onChange={() => onUpdate({ [m.id]: !c[m.id] })}
+                    className="w-3.5 h-3.5 rounded border-slate-300 focus:ring-sky-300"
+                  />
+                  {m.label}
+                </label>
               ))}
             </div>
+            <label
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs border cursor-pointer transition-colors ${
+                c.noDisponible ? "bg-red-500 text-white border-red-500" : "bg-white text-red-500 border-red-200 hover:bg-red-50"
+              }`}
+            >
+              <input
+                type="checkbox" checked={!!c.noDisponible} onChange={() => onUpdate({ noDisponible: !c.noDisponible })}
+                className="w-3.5 h-3.5 rounded border-red-300 focus:ring-red-300"
+              />
+              No disponible
+            </label>
           </div>
 
           <div>
@@ -3496,7 +3521,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
               </label>
               <label className="block">
                 <span className="text-xs text-slate-400">Places</span>
-                <input type="number" min="1" value={c.places} onChange={(e) => onUpdate({ places: Number(e.target.value) })}
+                <input type="number" min="0" value={c.places} onChange={(e) => onUpdate({ places: Number(e.target.value) })}
                   className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
               </label>
               <label className="block sm:col-span-3">
@@ -3619,7 +3644,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
                 })}
               </div>
             )}
-            {c.negotiationStatus !== "homologada" ? (
+            {!c.homologada ? (
               <p className="text-xs text-orange-600 bg-orange-50 border border-orange-100 rounded-lg px-3 py-2">
                 Aquesta empresa encara no està homologada — no s'hi pot assignar alumnat fins que l'estat de negociació sigui "Homologada".
               </p>
@@ -3698,7 +3723,7 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
       responsableNom: "", responsableCarrec: "",
       tutorNom: "", tutorTelefon: "", tutorEmail: "",
       activitats: [],
-      negotiationStatus: "pendent",
+      contactada: false, vacantsConfirmades: false, homologada: false, noDisponible: false,
       contacts: [],
     }]);
     setDraft({ nom: "", regim: "Presencial", places: 1 });
@@ -3763,7 +3788,7 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
             </label>
             <label className="block">
               <span className="text-xs text-slate-400">Places</span>
-              <input type="number" min="1" value={draft.places} onChange={(e) => setDraft({ ...draft, places: e.target.value })}
+              <input type="number" min="0" value={draft.places} onChange={(e) => setDraft({ ...draft, places: e.target.value })}
                 className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
             </label>
           </div>
