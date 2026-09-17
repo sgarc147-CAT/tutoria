@@ -6,7 +6,7 @@ import {
   ChevronLeft, X, Plus, Trash2, Save, Search, GraduationCap, BriefcaseBusiness,
   CalendarDays, CalendarOff, Percent, ClipboardList, ArrowLeft, Footprints, Bus,
   MessageCircle, MessageSquare, ShieldAlert, CalendarClock, Cake, Download, RefreshCw,
-  Mail, Handshake, PhoneCall
+  Mail, Handshake, PhoneCall, FileCheck2
 } from "lucide-react";
 
 /* ---------------------------------------------------------------------- */
@@ -264,17 +264,64 @@ function makeEmptyNotes(prefill) {
 }
 
 // Estats possibles de negociació amb una empresa, en l'ordre habitual del procés.
+// Estats de negociació amb una empresa (fins que està llesta per acollir alumnat).
+// El que passa DESPRÉS amb cada alumne concret (currículum, confirmació, conveni amb
+// les 4 signatures) es fa un cop assignat, a ASSIGNMENT_STAGES.
 const NEGOTIATION_STATUSES = [
   { id: "pendent", label: "Pendent de contactar", tone: "slate" },
-  { id: "enviat", label: "Correu enviat", tone: "sky" },
-  { id: "esperant", label: "Esperant resposta", tone: "sky" },
-  { id: "resposta", label: "Resposta rebuda", tone: "orange" },
-  { id: "confirmada", label: "Confirmada", tone: "green" },
+  { id: "contactada", label: "Contactada, esperant vacants", tone: "sky" },
+  { id: "vacants_confirmades", label: "Vacants confirmades", tone: "sky" },
+  { id: "homologada", label: "Homologada amb pla d'activitats", tone: "green" },
   { id: "no_disponible", label: "No disponible", tone: "red" },
 ];
 function negotiationStatusInfo(id) {
   return NEGOTIATION_STATUSES.find((s) => s.id === id) || NEGOTIATION_STATUSES[0];
 }
+
+// Etapes del procés, ja per a un alumne concret assignat a l'empresa: des que se li envia
+// el currículum fins que el conveni queda signat per les quatre parts.
+const ASSIGNMENT_STAGES = [
+  { id: "cv_enviat", label: "Currículum enviat" },
+  { id: "alumne_confirmat", label: "Confirmat per l'empresa" },
+  { id: "conveni", label: "Conveni en signatura" },
+  { id: "signat", label: "Conveni signat" },
+];
+const SIGNATURE_ROLES = [
+  { id: "tutor", label: "Tutor/a" },
+  { id: "empresa", label: "Empresa" },
+  { id: "alumne", label: "Alumne/a" },
+  { id: "institut", label: "Institut" },
+];
+function defaultAssignmentStatus() {
+  return { stage: "cv_enviat", signatures: { tutor: false, empresa: false, alumne: false, institut: false } };
+}
+
+// Extreu el domini d'una adreça de correu ("info@empresa.cat" -> "empresa.cat"), per
+// saber quin domini cercar a la safata d'entrada de Gmail.
+function extractDomain(email) {
+  if (!email || !email.includes("@")) return "";
+  return email.trim().split("@").pop().toLowerCase();
+}
+
+// Percentatges d'exempció de pràctiques per experiència laboral prèvia, amb el criteri
+// oficial de cadascun. Substitueix l'antiga "Reducció d'hores" (0/50/100%).
+const EXEMPTION_OPTIONS = [
+  { value: 0, label: "Sense exempció", criteria: "Ha de cursar la totalitat de les hores de pràctiques." },
+  { value: 25, label: "25% d'exempció", criteria: "Té el doble d'hores de vida laboral que les hores de pràctiques del mòdul." },
+  { value: 50, label: "50% d'exempció", criteria: "Nombre d'hores igual o superior al 50% del mòdul de pràctiques, amb experiència relacionada amb l'àmbit professional." },
+  { value: 100, label: "100% d'exempció", criteria: "Nombre d'hores igual o superior al mòdul de pràctiques, amb experiència relacionada amb l'àmbit professional." },
+];
+
+// Documentació que cal aportar a la fitxa de l'alumne perquè es pugui iniciar/tancar
+// correctament l'estada a l'empresa.
+const FCT_DOCUMENT_ITEMS = [
+  { id: "rf05", label: "RF05" },
+  { id: "planActivitats", label: "Pla d'activitats (còpia del de l'empresa)" },
+  { id: "butlletiAssistencia", label: "Butlletí d'assistència (quan el centre assumeix la responsabilitat de la SS)" },
+  { id: "resolucioNass", label: "Resolució NASS", optional: true, optionalHint: "Només si l'alumnat no ho ha aportat" },
+  { id: "registreProteccioDades", label: "Registre de formació en protecció de dades" },
+  { id: "certificatDelictes", label: "Certificat de delictes de naturalesa sexual", optional: true, optionalHint: "Quan apliqui (escoles, instituts...)" },
+];
 
 const MOCK_COMPANIES = [
   {
@@ -477,7 +524,7 @@ function normalizeDateValue(value) {
 }
 
 function mapRow(rawRow) {
-  const out = { emailInstitut: "", notes: makeEmptyNotes({}), notaEmpresa: null, autoritzaInfoPares: false, interviews: [], incidents: [] };
+  const out = { emailInstitut: "", notes: makeEmptyNotes({}), notaEmpresa: null, autoritzaInfoPares: false, interviews: [], incidents: [], nassValid: false, documents: {} };
   const keys = Object.keys(rawRow);
   HEADER_MAP.forEach(({ field, labels }) => {
     const key = keys.find((k) => labels.some((l) => normalize(k).includes(l)));
@@ -1237,8 +1284,21 @@ export default function App() {
   function assignCompanyToStudent(studentId, companyId) {
     setCompanies((prev) => prev.map((c) => {
       const withoutStudent = c.assignats.filter((id) => id !== studentId);
-      if (c.id === companyId) return { ...c, assignats: [...withoutStudent, studentId] };
+      if (c.id === companyId) {
+        const alreadyTracked = c.assignmentStatus && c.assignmentStatus[studentId];
+        const assignmentStatus = alreadyTracked
+          ? c.assignmentStatus
+          : { ...(c.assignmentStatus || {}), [studentId]: defaultAssignmentStatus() };
+        return { ...c, assignats: [...withoutStudent, studentId], assignmentStatus };
+      }
       return { ...c, assignats: withoutStudent };
+    }));
+  }
+  function updateAssignmentStatus(companyId, studentId, patch) {
+    setCompanies((prev) => prev.map((c) => {
+      if (c.id !== companyId) return c;
+      const current = (c.assignmentStatus && c.assignmentStatus[studentId]) || defaultAssignmentStatus();
+      return { ...c, assignmentStatus: { ...(c.assignmentStatus || {}), [studentId]: { ...current, ...patch } } };
     }));
   }
   function addImportedStudents(newOnes) {
@@ -1290,6 +1350,7 @@ export default function App() {
       autoritzaInfoPares: false,
       notes: makeEmptyNotes({}), notaEmpresa: null,
       interviews: [], incidents: [],
+      nassValid: false, documents: {}, terminacioAnticipada: null,
     };
     setStudents((prev) => [...prev, student]);
     setSchedules((prev) => ({ ...prev, [id]: { reduccio: 0, periods: [{ id: "p1", dataInici: "", dataFinal: "", ticks: makeEmptyGrid() }] } }));
@@ -1479,7 +1540,7 @@ export default function App() {
           />
         )}
         {tab === "companies" && (
-          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} />
+          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} />
         )}
         {tab === "trash" && (
           <TrashTab
@@ -1528,10 +1589,14 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     return properIso >= avuiIso && properIso <= en30diesIso;
   }).length;
 
-  const negociacioEsperant = companies.filter((c) => c.negotiationStatus === "esperant" || c.negotiationStatus === "enviat").length;
-  const negociacioRespostaPendent = companies.filter((c) => c.negotiationStatus === "resposta").length;
-  const negociacioConfirmada = companies.filter((c) => c.negotiationStatus === "confirmada").length;
+  const negociacioEsperant = companies.filter((c) => c.negotiationStatus === "contactada").length;
+  const negociacioVacantsConfirmades = companies.filter((c) => c.negotiationStatus === "vacants_confirmades").length;
+  const negociacioHomologada = companies.filter((c) => c.negotiationStatus === "homologada").length;
   const negociacioPendentContactar = companies.filter((c) => !c.negotiationStatus || c.negotiationStatus === "pendent").length;
+  const conveniPendentSignatures = companies.reduce((sum, c) => {
+    const statuses = Object.values(c.assignmentStatus || {});
+    return sum + statuses.filter((as) => as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean)).length;
+  }, 0);
 
   return (
     <div>
@@ -1553,10 +1618,15 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Negociacions amb empreses</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
         <StatTile label="Pendents de contactar" value={negociacioPendentContactar} tone="slate" icon={Mail} />
-        <StatTile label="Esperant resposta" value={negociacioEsperant} tone="sky" icon={Clock} />
-        <StatTile label="Resposta rebuda (per revisar)" value={negociacioRespostaPendent} tone="orange" icon={AlertTriangle} />
-        <StatTile label="Confirmades" value={negociacioConfirmada} tone="green" icon={Handshake} />
+        <StatTile label="Esperant vacants" value={negociacioEsperant} tone="sky" icon={Clock} />
+        <StatTile label="Vacants confirmades" value={negociacioVacantsConfirmades} tone="sky" icon={CheckCircle2} />
+        <StatTile label="Homologades" value={negociacioHomologada} tone="green" icon={Handshake} />
       </div>
+      {conveniPendentSignatures > 0 && (
+        <div className="mb-8 -mt-4">
+          <Badge tone="orange" icon={AlertTriangle}>{conveniPendentSignatures} conveni(s) pendents de completar les signatures</Badge>
+        </div>
+      )}
 
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Seguiment tutorial</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -2210,6 +2280,7 @@ function StudentDetail({ student, status, raWeights, moduleCourse, schedule, sch
     { id: "dades", label: "Dades personals", icon: ClipboardList },
     { id: "academic", label: "Acadèmic i notes", icon: GraduationCap },
     { id: "seguiment", label: "Seguiment", icon: MessageCircle },
+    { id: "documentacio", label: "Documentació FCT", icon: FileCheck2 },
     { id: "horari1r", label: "Classes pendents (automàtic)", icon: Clock },
     { id: "practiques", label: "Pràctiques i horari", icon: CalendarDays },
   ];
@@ -2269,6 +2340,9 @@ function StudentDetail({ student, status, raWeights, moduleCourse, schedule, sch
           onAddIncident={onAddIncident} onUpdateIncident={onUpdateIncident} onDeleteIncident={onDeleteIncident}
         />
       )}
+      {section === "documentacio" && (
+        <DocumentacioFCTSection student={student} onUpdateStudent={onUpdateStudent} />
+      )}
       {section === "horari1r" && <ClassScheduleSection classGrid={classGrid} template={classTemplate} />}
       {section === "practiques" && (
         <PracticumSection
@@ -2291,6 +2365,56 @@ function Field({ label, value, onChange }) {
         className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-sky-300"
       />
     </label>
+  );
+}
+
+// Fila reutilitzable per adjuntar un document (justificant, certificat...) al Drive de
+// l'usuari. Mentre no hi hagi cap fitxer, mostra un botó per triar-ne un; un cop pujat,
+// mostra el nom com a enllaç per obrir-lo i un botó per treure'l.
+function DocumentAttachRow({ label, doc, onAttach, onRemove }) {
+  const inputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleFile(file) {
+    if (typeof window === "undefined" || !window.__DRIVE_UPLOAD_DOC__) {
+      setError("La pujada de documents no està disponible en aquest entorn.");
+      return;
+    }
+    setUploading(true);
+    setError("");
+    try {
+      const uploaded = await window.__DRIVE_UPLOAD_DOC__(file);
+      onAttach(uploaded);
+    } catch (e) {
+      setError("No s'ha pogut pujar el fitxer.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div className="py-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-600">{label}</span>
+        {doc ? (
+          <div className="flex items-center gap-2 shrink-0">
+            <a href={doc.link} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-600 hover:underline truncate max-w-[160px]">
+              {doc.name}
+            </a>
+            <button onClick={onRemove} className="text-slate-300 hover:text-red-500"><X size={12} /></button>
+          </div>
+        ) : (
+          <>
+            <input ref={inputRef} type="file" className="hidden" onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
+            <button onClick={() => inputRef.current.click()} disabled={uploading} className="text-xs text-sky-600 hover:underline disabled:opacity-50 shrink-0">
+              {uploading ? "Pujant..." : "Adjunta fitxer"}
+            </button>
+          </>
+        )}
+      </div>
+      {error && <p className="text-[11px] text-red-500 mt-0.5">{error}</p>}
+    </div>
   );
 }
 
@@ -2574,6 +2698,116 @@ function SeguimentSection({ student, onAddInterview, onUpdateInterview, onDelete
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function DocumentacioFCTSection({ student, onUpdateStudent }) {
+  const documents = student.documents || {};
+  const term = student.terminacioAnticipada;
+
+  function updateDoc(itemId, patch) {
+    onUpdateStudent({ documents: { ...documents, [itemId]: { ...(documents[itemId] || {}), ...patch } } });
+  }
+
+  function startTerminacio() {
+    onUpdateStudent({ terminacioAnticipada: { data: toIsoDate(new Date()), signatures: { tutor: false, empresa: false, alumne: false, institut: false } } });
+  }
+
+  function toggleSignature(who) {
+    onUpdateStudent({ terminacioAnticipada: { ...term, signatures: { ...term.signatures, [who]: !term.signatures[who] } } });
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-5">
+        <p className="text-sm font-medium text-slate-700 mb-3">NASS</p>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input
+            type="checkbox" checked={!!student.nassValid} onChange={(e) => onUpdateStudent({ nassValid: e.target.checked })}
+            className="w-4 h-4 rounded border-slate-300 text-sky-500 focus:ring-sky-300"
+          />
+          Té un NASS vàlid {student.nass ? <span className="text-slate-400">({student.nass})</span> : <span className="text-orange-500">(no s'ha registrat cap número de NASS a les dades personals)</span>}
+        </label>
+      </Card>
+
+      <Card className="p-5">
+        <p className="text-sm font-medium text-slate-700 mb-1">Documentació necessària per a l'estada a l'empresa</p>
+        <p className="text-xs text-slate-400 mb-3">Marca cada document quan estigui fet i, si vols, adjunta'n l'arxiu.</p>
+        <div className="space-y-3">
+          {FCT_DOCUMENT_ITEMS.map((item) => {
+            const doc = documents[item.id] || {};
+            return (
+              <div key={item.id} className="border border-slate-100 rounded-lg p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox" checked={!!doc.done} disabled={!!doc.notApply}
+                      onChange={(e) => updateDoc(item.id, { done: e.target.checked })}
+                      className="w-4 h-4 rounded border-slate-300 text-sky-500 focus:ring-sky-300"
+                    />
+                    {item.label}
+                  </label>
+                  {item.optional && (
+                    <label className="flex items-center gap-1.5 text-xs text-slate-400">
+                      <input
+                        type="checkbox" checked={!!doc.notApply}
+                        onChange={(e) => updateDoc(item.id, { notApply: e.target.checked, done: false })}
+                        className="w-3.5 h-3.5 rounded border-slate-300 text-slate-400 focus:ring-slate-300"
+                      />
+                      No aplica <span className="text-slate-300">— {item.optionalHint}</span>
+                    </label>
+                  )}
+                </div>
+                {!doc.notApply && (
+                  <DocumentAttachRow
+                    label="Fitxer adjunt"
+                    doc={doc.file}
+                    onAttach={(file) => updateDoc(item.id, { file })}
+                    onRemove={() => updateDoc(item.id, { file: null })}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card className="p-5">
+        <p className="text-sm font-medium text-slate-700 mb-1">Finalització anticipada de l'acord</p>
+        <p className="text-xs text-slate-400 mb-3">
+          Si l'estada a l'empresa s'ha d'acabar abans d'hora, cal gestionar les quatre signatures del document de finalització.
+        </p>
+        {!term ? (
+          <button onClick={startTerminacio} className="px-3 py-1.5 rounded-lg border border-orange-200 text-orange-600 text-xs font-medium hover:bg-orange-50">
+            Marca l'acord com a finalitzat anticipadament
+          </button>
+        ) : (
+          <div>
+            <p className="text-xs text-slate-500 mb-2">Data de finalització: {term.data}</p>
+            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Signatures del document de finalització</p>
+            <div className="flex flex-wrap gap-4">
+              {[
+                { id: "tutor", label: "Tutor/a del centre" },
+                { id: "empresa", label: "Empresa" },
+                { id: "alumne", label: "Alumne/a" },
+                { id: "institut", label: "Institut" },
+              ].map((who) => (
+                <label key={who.id} className="flex items-center gap-2 text-sm text-slate-600">
+                  <input
+                    type="checkbox" checked={!!term.signatures[who.id]} onChange={() => toggleSignature(who.id)}
+                    className="w-4 h-4 rounded border-slate-300 text-sky-500 focus:ring-sky-300"
+                  />
+                  {who.label}
+                </label>
+              ))}
+            </div>
+            <button onClick={() => onUpdateStudent({ terminacioAnticipada: null })} className="mt-3 text-xs text-slate-400 hover:text-red-500 underline">
+              Desfés la finalització anticipada
+            </button>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
@@ -2932,13 +3166,45 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
       </Card>
 
       <Card className="p-5">
-        <p className="text-sm font-medium text-slate-700 mb-3">Reducció d'hores</p>
-        <select value={schedule.reduccio} onChange={(e) => onUpdateSchedule({ reduccio: Number(e.target.value) })}
-          className="w-full sm:w-48 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-300">
-          <option value={0}>0%</option>
-          <option value={50}>50%</option>
-          <option value={100}>100%</option>
-        </select>
+        <p className="text-sm font-medium text-slate-700 mb-1">Exempció de pràctiques per experiència laboral</p>
+        <p className="text-xs text-slate-400 mb-3">Redueix les hores de pràctiques necessàries en funció de l'experiència laboral prèvia relacionada amb l'àmbit professional.</p>
+        <div className="space-y-2 mb-3">
+          {EXEMPTION_OPTIONS.map((opt) => (
+            <label
+              key={opt.value}
+              className={`flex items-start gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                (schedule.reduccio || 0) === opt.value ? "border-sky-300 bg-sky-50" : "border-slate-100 hover:border-slate-200"
+              }`}
+            >
+              <input
+                type="radio" name={`exempcio-${student.id}`} checked={(schedule.reduccio || 0) === opt.value}
+                onChange={() => onUpdateSchedule({ reduccio: opt.value })}
+                className="mt-0.5 text-sky-500 focus:ring-sky-300"
+              />
+              <div>
+                <p className="text-sm text-slate-700">{opt.label}</p>
+                <p className="text-xs text-slate-400">{opt.criteria}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+        {(schedule.reduccio || 0) > 0 && (
+          <div className="border-t border-slate-100 pt-3">
+            <p className="text-xs text-slate-500 mb-2">Documentació necessària per justificar l'exempció:</p>
+            <DocumentAttachRow
+              label="Informe de vida laboral"
+              doc={schedule.exemptionDocs?.vidaLaboral}
+              onAttach={(doc) => onUpdateSchedule({ exemptionDocs: { ...schedule.exemptionDocs, vidaLaboral: doc } })}
+              onRemove={() => onUpdateSchedule({ exemptionDocs: { ...schedule.exemptionDocs, vidaLaboral: null } })}
+            />
+            <DocumentAttachRow
+              label="Certificat de l'empresa de les activitats realitzades"
+              doc={schedule.exemptionDocs?.certificatEmpresa}
+              onAttach={(doc) => onUpdateSchedule({ exemptionDocs: { ...schedule.exemptionDocs, certificatEmpresa: doc } })}
+              onRemove={() => onUpdateSchedule({ exemptionDocs: { ...schedule.exemptionDocs, certificatEmpresa: null } })}
+            />
+          </div>
+        )}
       </Card>
 
       <div className="flex items-center justify-between">
@@ -3003,7 +3269,93 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
 /* 12. EMPRESES                                                           */
 /* ---------------------------------------------------------------------- */
 
-function CompanyCard({ company: c, students, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact }) {
+function CompanyInbox({ company, onAddContact }) {
+  const [status, setStatus] = useState("idle"); // idle | loading | done | error
+  const [emails, setEmails] = useState([]);
+  const [error, setError] = useState("");
+  const domain = extractDomain(company.email) || extractDomain(company.tutorEmail);
+  const loggedGmailIds = new Set((company.contacts || []).map((ct) => ct.gmailId).filter(Boolean));
+
+  async function search() {
+    if (!domain) { setError("Cal que la fitxa tingui un correu (general o del tutor) per saber quin domini cercar."); return; }
+    setStatus("loading");
+    setError("");
+    try {
+      const results = await window.__GMAIL_SEARCH__(domain, 6);
+      setEmails(results);
+      setStatus("done");
+    } catch (e) {
+      setError(e.message || "No s'han pogut cercar els correus.");
+      setStatus("error");
+    }
+  }
+
+  function addToFollowUp(email) {
+    const isFromCompany = domain && email.from.toLowerCase().includes("@" + domain);
+    onAddContact({
+      id: "ct" + Math.random().toString(36).slice(2, 8),
+      data: email.date ? new Date(email.date).toISOString().slice(0, 10) : "",
+      tipus: isFromCompany ? "Correu rebut" : "Correu enviat",
+      notes: email.subject,
+      gmailId: email.id,
+    });
+  }
+
+  if (typeof window === "undefined" || !window.__GMAIL_SEARCH__) return null;
+
+  return (
+    <div>
+      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Mail size={13} /> Safata d'entrada (últims 6 mesos)</p>
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <p className="text-xs text-slate-500">{domain ? `Cercant correus de/cap a @${domain}` : "Cal un correu a la fitxa per poder cercar"}</p>
+          <button
+            onClick={search} disabled={status === "loading" || !domain}
+            className="px-3 py-1.5 rounded-lg bg-sky-500 text-white text-xs font-medium hover:bg-sky-600 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {status === "loading" ? "Cercant..." : "Cerca correus"}
+          </button>
+        </div>
+        {error && <p className="text-xs text-red-600 mb-2">{error}</p>}
+        {status === "done" && emails.length === 0 && (
+          <p className="text-xs text-slate-400">No s'ha trobat cap correu d'aquest domini en els últims 6 mesos.</p>
+        )}
+        {emails.length > 0 && (
+          <div className="space-y-2 max-h-72 overflow-y-auto">
+            {emails.map((e) => {
+              const already = loggedGmailIds.has(e.id);
+              return (
+                <div key={e.id} className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium text-slate-700 truncate">{e.subject}</p>
+                      <p className="text-[11px] text-slate-400 truncate">{e.from}</p>
+                      {e.snippet && <p className="text-xs text-slate-500 mt-1">{e.snippet}</p>}
+                    </div>
+                    <div className="flex flex-col items-end gap-1 shrink-0">
+                      <a href={e.link} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-600 hover:underline whitespace-nowrap">
+                        Obre a Gmail
+                      </a>
+                      {already ? (
+                        <span className="text-[11px] text-green-600 whitespace-nowrap">Ja al seguiment</span>
+                      ) : (
+                        <button onClick={() => addToFollowUp(e)} className="text-xs text-sky-600 hover:underline whitespace-nowrap">
+                          Afegeix al seguiment
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function CompanyCard({ company: c, students, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
   const selectedCount = (c.activitats || []).length;
   const status = negotiationStatusInfo(c.negotiationStatus);
@@ -3102,6 +3454,8 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
             </div>
           </div>
 
+          <CompanyInbox company={c} onAddContact={onAddContact} />
+
           <div>
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Mail size={13} /> Seguiment de la negociació</p>
             <Card className="p-4 mb-3">
@@ -3150,20 +3504,62 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
 
           <div>
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Alumnat assignat</p>
+            {students.filter((s) => c.assignats.includes(s.id)).length > 0 && (
+              <div className="space-y-2 mb-3">
+                {students.filter((s) => c.assignats.includes(s.id)).map((s) => {
+                  const as = (c.assignmentStatus && c.assignmentStatus[s.id]) || defaultAssignmentStatus();
+                  const allSigned = Object.values(as.signatures || {}).every(Boolean);
+                  return (
+                    <Card key={s.id} className="p-3 bg-slate-50">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-sm font-medium text-slate-700">{s.nom} {s.cognoms} <span className="text-xs text-slate-400 font-normal">({s.grup || "ADM2"})</span></p>
+                        <button onClick={() => onToggleAssign(s.id)} className="text-xs text-red-500 hover:underline">Desassigna</button>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {ASSIGNMENT_STAGES.map((st) => (
+                          <button
+                            key={st.id} onClick={() => onUpdateAssignmentStatus(s.id, { stage: st.id })}
+                            className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                              as.stage === st.id ? "bg-sky-500 text-white border-sky-500" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
+                            }`}
+                          >
+                            {st.label}
+                          </button>
+                        ))}
+                      </div>
+                      {(as.stage === "conveni" || as.stage === "signat") && (
+                        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-200">
+                          <span className="text-xs text-slate-400">Signatures del conveni:</span>
+                          {SIGNATURE_ROLES.map((role) => (
+                            <label key={role.id} className="flex items-center gap-1.5 text-xs text-slate-600">
+                              <input
+                                type="checkbox" checked={!!as.signatures[role.id]}
+                                onChange={() => onUpdateAssignmentStatus(s.id, { signatures: { ...as.signatures, [role.id]: !as.signatures[role.id] } })}
+                                className="w-3.5 h-3.5 rounded border-slate-300 text-sky-500 focus:ring-sky-300"
+                              />
+                              {role.label}
+                            </label>
+                          ))}
+                          {allSigned && <Badge tone="green" icon={CheckCircle2}>Conveni complet</Badge>}
+                        </div>
+                      )}
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+            <p className="text-xs text-slate-400 mb-1.5">{students.some((s) => c.assignats.includes(s.id)) ? "Assigna'n un altre:" : "Assigna alumnat:"}</p>
             <div className="flex flex-wrap gap-2">
-              {students.map((s) => {
-                const on = c.assignats.includes(s.id);
-                const elsewhere = !on && companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
-                const full = !on && c.assignats.length >= c.places;
+              {students.filter((s) => !c.assignats.includes(s.id)).map((s) => {
+                const elsewhere = companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
+                const full = c.assignats.length >= c.places;
                 return (
                   <button
                     key={s.id} onClick={() => onToggleAssign(s.id)}
                     disabled={full}
                     title={elsewhere ? "Assignat a una altra empresa — es reassignarà aquí" : full ? "Sense places lliures" : ""}
                     className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                      on ? "bg-sky-500 text-white border-sky-500"
-                        : full ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed"
-                        : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
+                      full ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
                     }`}
                   >
                     {s.nom} {s.cognoms} <span className="opacity-60">({s.grup || "ADM2"})</span>{elsewhere ? " ↺" : ""}
@@ -3201,7 +3597,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
   );
 }
 
-function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTrashCompany }) {
+function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus }) {
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [draft, setDraft] = useState({ nom: "", regim: "Presencial", places: 1 });
@@ -3303,6 +3699,7 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
             onToggleActivity={(itemId) => toggleActivity(c.id, itemId)}
             onAddContact={(contact) => addCompanyContact(c.id, contact)}
             onDeleteContact={(contactId) => deleteCompanyContact(c.id, contactId)}
+            onUpdateAssignmentStatus={(studentId, patch) => onUpdateAssignmentStatus(c.id, studentId, patch)}
           />
         ))}
       </div>
