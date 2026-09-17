@@ -505,6 +505,17 @@ function normalize(s) {
     .trim();
 }
 
+// Compara un nom complet lliure (com el que escriuria algú en un formulari) contra el
+// nom+cognoms d'un alumne, sense importar l'ordre de les paraules ni si hi ha comes.
+function normalizeNameForMatch(s) {
+  return normalize(s).replace(/,/g, " ").split(/\s+/).filter(Boolean).sort().join(" ");
+}
+function findStudentByFullName(students, fullName) {
+  const target = normalizeNameForMatch(fullName);
+  if (!target) return -1;
+  return students.findIndex((s) => normalizeNameForMatch(`${s.nom} ${s.cognoms}`) === target);
+}
+
 // Excel guarda les dates com un número de sèrie (dies des del 30/12/1899), no com a text.
 // Aquesta funció ho detecta i ho converteix sempre a "AAAA-MM-DD", tant si arriba com a
 // número, com a objecte Date, com a text ja normal.
@@ -1066,6 +1077,9 @@ export default function App() {
   });
   const [selectedStudentId, setSelectedStudentId] = useState(null);
   const [holidays, setHolidays] = useState(initial.holidays || []); // dates "AAAA-MM-DD" marcades com a festiu/vacances
+  // Formulari de preferències d'activitats (Google Forms): { formId, responderUri,
+  // nameQuestionId, categoryQuestionIds }. Un de sol per aplicació, no cal fer-ne un per grup.
+  const [activityForm, setActivityForm] = useState(initial.activityForm || null);
   const [saveStatus, setSaveStatus] = useState("idle"); // idle | pending | saving | saved | error
   // Registre d'eliminacions definitives {id: dataHora}: viatja amb la resta de dades perquè
   // cap fusió posterior pugui ressuscitar un alumne/empresa que s'ha esborrat de veritat.
@@ -1081,7 +1095,7 @@ export default function App() {
   // pugui reintentar amb dades fresques quan hi ha desats en cua.
   const latestRef = useRef(null);
   useEffect(() => {
-    latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds };
+    latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm };
   });
 
   // Evita que dues operacions de Drive (el desat automàtic i l'actualització periòdica)
@@ -1127,7 +1141,7 @@ export default function App() {
     setSaveStatus("pending");
     const t = setTimeout(() => { runSave(); }, 800);
     return () => clearTimeout(t);
-  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds]);
+  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm]);
 
   useEffect(() => {
     function handleBeforeUnload(e) {
@@ -1172,7 +1186,7 @@ export default function App() {
   }, []);
 
   function downloadBackup() {
-    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds };
+    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1183,6 +1197,40 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }
+
+  // Crea el Google Form de preferències d'activitats (una sola vegada; si ja n'hi ha un
+  // de creat, no en fa un altre — cal esborrar-lo manualment i tornar-ho a fer si es vol
+  // canviar el pla d'activitats reflectit al formulari).
+  async function createPreferencesForm() {
+    if (typeof window === "undefined" || !window.__FORMS_CREATE__) throw new Error("La creació de formularis no està disponible en aquest entorn.");
+    const result = await window.__FORMS_CREATE__(ACTIVITY_PLAN, activeGroup);
+    setActivityForm(result);
+    return result;
+  }
+
+  // Llegeix les respostes del formulari i actualitza les preferències de cada alumne
+  // trobat pel nom. Retorna un resum (quants s'han actualitzat i els noms que no s'han
+  // pogut aparellar amb ningú del grup) perquè la interfície ho pugui mostrar.
+  async function importPreferencesFormResponses() {
+    if (!activityForm || typeof window === "undefined" || !window.__FORMS_FETCH_RESPONSES__) {
+      throw new Error("Encara no s'ha creat cap formulari.");
+    }
+    const responses = await window.__FORMS_FETCH_RESPONSES__(activityForm.formId, activityForm.nameQuestionId, activityForm.categoryQuestionIds);
+    let updated = 0;
+    const unmatched = [];
+    setStudents((prev) => {
+      const working = prev.map((s) => ({ ...s }));
+      responses.forEach((r) => {
+        if (!r.name) return;
+        const idx = findStudentByFullName(working, r.name);
+        if (idx === -1) { unmatched.push(r.name); return; }
+        working[idx] = { ...working[idx], activityPreferences: r.activityIds };
+        updated++;
+      });
+      return working;
+    });
+    return { updated, unmatched, total: responses.length };
   }
 
   function changeGroup(g) {
@@ -1499,7 +1547,12 @@ export default function App() {
       {/* Main */}
       <main className="flex-1 p-4 md:p-8 max-w-6xl">
         {tab === "dashboard" && <Dashboard activeGroup={activeGroup} students={groupStudents} statuses={statuses} scheduleStatuses={scheduleStatuses} companies={activeCompanies} />}
-        {tab === "import" && <ImportTab activeGroup={activeGroup} students={groupStudents} onImport={addImportedStudents} onImportNotes={importNotesGrid} />}
+        {tab === "import" && (
+          <ImportTab
+            activeGroup={activeGroup} students={groupStudents} onImport={addImportedStudents} onImportNotes={importNotesGrid}
+            activityForm={activityForm} onCreatePreferencesForm={createPreferencesForm} onImportPreferencesForm={importPreferencesFormResponses}
+          />
+        )}
         {tab === "ra" && <RaConfigTab raWeights={raWeights} setRaWeights={setRaWeights} moduleCourse={moduleCourse} setModuleCourse={setModuleCourse} />}
         {tab === "horariTemplate" && (
           <ClassTemplateTab
@@ -1679,7 +1732,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
 /* 8. IMPORTACIÓ                                                          */
 /* ---------------------------------------------------------------------- */
 
-function ImportTab({ activeGroup, students, onImport, onImportNotes }) {
+function ImportTab({ activeGroup, students, onImport, onImportNotes, activityForm, onCreatePreferencesForm, onImportPreferencesForm }) {
   const [preview, setPreview] = useState(null);
   const [selectedFields, setSelectedFields] = useState(new Set());
   const [selectedRows, setSelectedRows] = useState(new Set());
@@ -1982,6 +2035,100 @@ function ImportTab({ activeGroup, students, onImport, onImportNotes }) {
       </div>
 
       <DriveActaSync onImportNotes={onImportNotes} />
+
+      <PreferencesFormSync activeGroup={activeGroup} activityForm={activityForm} onCreateForm={onCreatePreferencesForm} onImportResponses={onImportPreferencesForm} />
+    </div>
+  );
+}
+
+function PreferencesFormSync({ activeGroup, activityForm, onCreateForm, onImportResponses }) {
+  const [creating, setCreating] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const available = typeof window !== "undefined" && window.__FORMS_CREATE__ && window.__FORMS_FETCH_RESPONSES__;
+  if (!available) return null;
+
+  async function handleCreate() {
+    setCreating(true);
+    setError("");
+    try {
+      await onCreateForm();
+    } catch (e) {
+      setError(e.message || "No s'ha pogut crear el formulari.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleImport() {
+    setImporting(true);
+    setError("");
+    setResult(null);
+    try {
+      const res = await onImportResponses();
+      setResult(res);
+    } catch (e) {
+      setError(e.message || "No s'han pogut importar les respostes.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function copyLink() {
+    navigator.clipboard.writeText(activityForm.responderUri).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  return (
+    <div className="border-t border-slate-200 pt-8 mt-8">
+      <h2 className="text-lg font-semibold text-slate-800 mb-1">Preferències d'activitats — Google Forms</h2>
+      <p className="text-sm text-slate-500 mb-4">
+        Crea un formulari perquè cada alumne/a marqui les activitats del pla que preferiria fer, i importa'n les respostes amb un clic
+        — s'aparellen automàticament pel nom i cognoms que escrigui a la primera pregunta.
+      </p>
+
+      {!activityForm ? (
+        <button onClick={handleCreate} disabled={creating} className="px-4 py-2 rounded-lg bg-sky-500 text-white text-sm font-medium hover:bg-sky-600 disabled:opacity-50">
+          {creating ? "Creant el formulari..." : "Crea el formulari de preferències"}
+        </button>
+      ) : (
+        <div className="space-y-3">
+          <Card className="p-4">
+            <p className="text-xs text-slate-400 mb-1.5">Enllaç per compartir amb l'alumnat:</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <a href={activityForm.responderUri} target="_blank" rel="noopener noreferrer" className="text-sm text-sky-600 hover:underline break-all">
+                {activityForm.responderUri}
+              </a>
+              <button onClick={copyLink} className="text-xs text-slate-500 border border-slate-200 rounded-lg px-2.5 py-1 hover:border-sky-300 shrink-0">
+                {copied ? "Copiat!" : "Copia l'enllaç"}
+              </button>
+            </div>
+          </Card>
+          <button onClick={handleImport} disabled={importing} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
+            <RefreshCw size={14} /> {importing ? "Important..." : "Importa respostes"}
+          </button>
+        </div>
+      )}
+
+      {error && <p className="text-xs text-red-600 mt-3">{error}</p>}
+
+      {result && (
+        <Card className="p-5 mt-4">
+          <p className="text-sm font-medium text-slate-700 mb-1">Resultat de la importació</p>
+          <div className="flex flex-wrap gap-2 mt-2">
+            <Badge tone="green" icon={CheckCircle2}>{result.updated}/{result.total} alumnes actualitzats</Badge>
+            {result.unmatched.length > 0 && <Badge tone="orange" icon={AlertTriangle}>{result.unmatched.length} sense aparellar</Badge>}
+          </div>
+          {result.unmatched.length > 0 && (
+            <p className="text-xs text-slate-500 mt-2">Noms sense coincidència al grup: {result.unmatched.join(", ")}</p>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
@@ -3152,9 +3299,20 @@ function TravelTimeCard({ originAddress, destinationAddress, desiredMinutes, onU
   );
 }
 
-function ActivityPreferencesCard({ student, onUpdateStudent }) {
+// Percentatge d'afinitat entre les activitats que prefereix l'alumne/a i les que
+// realment ofereix l'empresa: quina part del que vol l'alumne hi troba, de fet.
+function activityAffinity(preferences, companyActivities) {
+  if (!preferences || preferences.length === 0) return null;
+  const companySet = new Set(companyActivities || []);
+  const matched = preferences.filter((p) => companySet.has(p)).length;
+  return Math.round((matched / preferences.length) * 100);
+}
+
+function ActivityPreferencesCard({ student, assignedCompany, onUpdateStudent }) {
   const prefs = student.activityPreferences || [];
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
+  const affinity = assignedCompany ? activityAffinity(prefs, assignedCompany.activitats) : null;
+  const companyOffers = new Set(assignedCompany ? assignedCompany.activitats || [] : []);
 
   function toggle(itemId) {
     const next = prefs.includes(itemId) ? prefs.filter((p) => p !== itemId) : [...prefs, itemId];
@@ -3165,25 +3323,37 @@ function ActivityPreferencesCard({ student, onUpdateStudent }) {
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
         <p className="text-sm font-medium text-slate-700">Preferències d'activitats de l'alumne/a</p>
-        <Badge tone="slate">{prefs.length}/{totalActivitats} activitats</Badge>
+        <div className="flex gap-2">
+          <Badge tone="slate">{prefs.length}/{totalActivitats} activitats</Badge>
+          {affinity != null && (
+            <Badge tone={affinity >= 70 ? "green" : affinity >= 40 ? "orange" : "red"}>{affinity}% afinitat amb l'empresa</Badge>
+          )}
+        </div>
       </div>
       <p className="text-xs text-slate-400 mb-3">
-        Marca les activitats del pla que l'alumne/a preferiria fer, per tenir-ho en compte a l'hora de negociar amb l'empresa.
+        Marca les activitats del pla que l'alumne/a preferiria fer.
+        {assignedCompany ? " Les que l'empresa assignada ja ofereix es marquen en verd." : " Assigna una empresa per veure el % d'afinitat."}
       </p>
       <div className="space-y-3">
         {ACTIVITY_PLAN.map((cat) => (
           <div key={cat.id} className="border border-slate-100 rounded-lg p-3">
             <p className="text-xs font-medium text-slate-600 mb-2">{cat.id}. {cat.title}</p>
             <div className="space-y-1.5">
-              {cat.items.map((item) => (
-                <label key={item.id} className="flex items-start gap-2 text-xs text-slate-600">
-                  <input
-                    type="checkbox" checked={prefs.includes(item.id)} onChange={() => toggle(item.id)}
-                    className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-sky-500 focus:ring-sky-300 shrink-0"
-                  />
-                  <span><span className="text-slate-400">{item.id}</span> {item.text}</span>
-                </label>
-              ))}
+              {cat.items.map((item) => {
+                const offered = companyOffers.has(item.id);
+                return (
+                  <label key={item.id} className={`flex items-start gap-2 text-xs ${offered ? "text-green-700" : "text-slate-600"}`}>
+                    <input
+                      type="checkbox" checked={prefs.includes(item.id)} onChange={() => toggle(item.id)}
+                      className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-sky-500 focus:ring-sky-300 shrink-0"
+                    />
+                    <span>
+                      <span className={offered ? "text-green-400" : "text-slate-400"}>{item.id}</span> {item.text}
+                      {offered && <span className="text-green-500"> ✓ ofert per l'empresa</span>}
+                    </span>
+                  </label>
+                );
+              })}
             </div>
           </div>
         ))}
@@ -3234,7 +3404,7 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
         />
       )}
 
-      <ActivityPreferencesCard student={student} onUpdateStudent={onUpdateStudent} />
+      <ActivityPreferencesCard student={student} assignedCompany={assignedCompany} onUpdateStudent={onUpdateStudent} />
 
       <Card className="p-5">
         <p className="text-sm font-medium text-slate-700 mb-1">Nota d'estada a l'empresa</p>
@@ -3655,6 +3825,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
                   {students.filter((s) => !c.assignats.includes(s.id)).map((s) => {
                     const elsewhere = companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
                     const full = c.assignats.length >= c.places;
+                    const affinity = activityAffinity(s.activityPreferences, c.activitats);
                     return (
                       <button
                         key={s.id} onClick={() => onToggleAssign(s.id)}
@@ -3665,6 +3836,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
                         }`}
                       >
                         {s.nom} {s.cognoms} <span className="opacity-60">({s.grup || "ADM2"})</span>{elsewhere ? " ↺" : ""}
+                        {affinity != null && <span className={affinity >= 70 ? "text-green-600" : affinity >= 40 ? "text-orange-500" : "text-red-500"}> · {affinity}%</span>}
                       </button>
                     );
                   })}
