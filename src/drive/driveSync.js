@@ -178,3 +178,64 @@ export async function downloadFileArrayBuffer(token, file) {
   const res = await driveFetch(`${FILES_URL}/${file.id}?alt=media&supportsAllDrives=true`, token);
   return await res.arrayBuffer();
 }
+
+// Carpeta on es pengen tots els documents adjunts (justificants d'exempció, documentació
+// FCT...). Es crea la primera vegada que cal, i després es reutilitza sempre la mateixa.
+const DOCS_FOLDER_NAME = "gestio-adm2-lomloe-documents";
+let cachedDocsFolderId = null;
+
+async function findOrCreateDocsFolder(token) {
+  if (cachedDocsFolderId) return cachedDocsFolderId;
+  const q = encodeURIComponent(`name = '${DOCS_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+  const res = await driveFetch(`${FILES_URL}?q=${q}&spaces=drive&fields=files(id)`, token);
+  const data = await res.json();
+  if (data.files && data.files.length) {
+    cachedDocsFolderId = data.files[0].id;
+    return cachedDocsFolderId;
+  }
+  const createRes = await driveFetch(FILES_URL, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: DOCS_FOLDER_NAME, mimeType: "application/vnd.google-apps.folder" }),
+  });
+  const created = await createRes.json();
+  cachedDocsFolderId = created.id;
+  return cachedDocsFolderId;
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+// Puja un document (justificant, certificat, foto d'un paper signat...) a una carpeta
+// dedicada del Drive de l'usuari, i retorna les dades mínimes per desar-lo referenciat
+// dins la fitxa de l'alumne/empresa (mai el contingut sencer, només el nom i l'enllaç).
+export async function uploadDocument(token, file) {
+  const folderId = await findOrCreateDocsFolder(token);
+  const arrayBuffer = await file.arrayBuffer();
+  const base64Data = arrayBufferToBase64(arrayBuffer);
+  const metadata = { name: `${Date.now()}-${file.name}`, parents: [folderId] };
+  const boundary = "-------gestioadm2docboundary";
+  const body =
+    `--${boundary}\r\n` +
+    `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+    `${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: ${file.type || "application/octet-stream"}\r\n` +
+    `Content-Transfer-Encoding: base64\r\n\r\n` +
+    `${base64Data}\r\n` +
+    `--${boundary}--`;
+  const res = await driveFetch(`${UPLOAD_URL}?uploadType=multipart`, token, {
+    method: "POST",
+    headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
+    body,
+  });
+  const created = await res.json();
+  return { id: created.id, name: file.name, link: `https://drive.google.com/file/d/${created.id}/view` };
+}
