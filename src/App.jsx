@@ -1628,7 +1628,8 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   const noPotCursar = students.filter((s) => statuses[s.id].blocks.some((b) => b.target !== "Accés a Pràctiques (FCT)")).length;
   const assignedIds = new Set(companies.flatMap((c) => c.assignats));
   const fentPractiques = students.filter((s) => assignedIds.has(s.id)).length;
-  const senseAssignar = total - fentPractiques;
+  const noFaPractiquesCount = students.filter((s) => s.noFaPractiques).length;
+  const senseAssignar = total - fentPractiques - noFaPractiquesCount;
   // Només compten com a places reals les de les empreses ja homologades — mentre no ho
   // estiguin, no hi ha cap plaça confirmada de veritat, encara que hi hagi un número
   // orientatiu apuntat a la fitxa.
@@ -2468,8 +2469,14 @@ function StudentDetail({ student, status, raWeights, moduleCourse, schedule, sch
         </div>
         <div className="flex flex-wrap gap-2">
           {age != null && (isMinor ? <Badge tone="slate">Menor d'edat ({age} anys)</Badge> : <Badge tone="slate">Major d'edat ({age} anys)</Badge>)}
-          {status.aptePractiques ? <Badge tone="green" icon={CheckCircle2}>Apte per a pràctiques</Badge> : <Badge tone="red" icon={XCircle}>No apte (1r &lt; 80%)</Badge>}
-          {scheduleStatus.complete ? <Badge tone="green" icon={CheckCircle2}>Hores FCT completes</Badge> : <Badge tone="orange" icon={Clock}>Mancança d'hores FCT</Badge>}
+          {student.noFaPractiques ? (
+            <Badge tone="slate" icon={XCircle}>No fa pràctiques (manual)</Badge>
+          ) : status.aptePractiques ? (
+            <Badge tone="green" icon={CheckCircle2}>Apte per a pràctiques</Badge>
+          ) : (
+            <Badge tone="red" icon={XCircle}>No apte (1r &lt; 80%)</Badge>
+          )}
+          {!student.noFaPractiques && (scheduleStatus.complete ? <Badge tone="green" icon={CheckCircle2}>Hores FCT completes</Badge> : <Badge tone="orange" icon={Clock}>Mancança d'hores FCT</Badge>)}
           {obertIncidents > 0 && <Badge tone="red" icon={ShieldAlert}>{obertIncidents} incidència(es) oberta(es)</Badge>}
         </div>
       </div>
@@ -3370,6 +3377,22 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
 
   return (
     <div className="space-y-5">
+      <Card className="p-5">
+        <label className="flex items-start gap-2.5 cursor-pointer">
+          <input
+            type="checkbox" checked={!!student.noFaPractiques}
+            onChange={(e) => onUpdateStudent({ noFaPractiques: e.target.checked })}
+            className="mt-0.5 w-4 h-4 rounded border-slate-300 text-sky-500 focus:ring-sky-300"
+          />
+          <span>
+            <span className="text-sm font-medium text-slate-700">Aquest alumne/a no fa pràctiques</span>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Marca-ho manualment per als casos que el càlcul automàtic (aptitud, hores, exempció) no reculli — l'estat de la fitxa ho reflectirà i deixarà de comptar com a "sense assignar" al Dashboard.
+            </p>
+          </span>
+        </label>
+      </Card>
+
       <Card className="p-5">
         <p className="text-sm font-medium text-slate-700 mb-3">Empresa assignada</p>
         <select
