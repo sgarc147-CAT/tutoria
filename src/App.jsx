@@ -3959,8 +3959,6 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
       onAssignCompany(studentId, null);
       return;
     }
-    const placesLeft = company.places - company.assignats.length;
-    if (placesLeft <= 0) return;
     onAssignCompany(studentId, companyId);
   }
 
