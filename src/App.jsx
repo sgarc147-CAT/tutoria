@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
+import { PieChart, Pie, Cell, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import {
   LayoutDashboard, FileSpreadsheet, Settings, Users, Building2,
   UploadCloud, CheckCircle2, XCircle, AlertTriangle, Clock, ChevronRight, ChevronDown,
@@ -1599,7 +1600,7 @@ export default function App() {
           />
         )}
         {tab === "companies" && (
-          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} />
+          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} statuses={statuses} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} />
         )}
         {tab === "trash" && (
           <TrashTab
@@ -1663,6 +1664,38 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     return sum + statuses.filter((as) => as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean)).length;
   }, 0);
 
+  // Dades pels gràfics: estat de col·locació de cada alumne (confirmat / candidat en
+  // procés / sense assignar / no fa pràctiques) i quants candidats hi ha a cada etapa
+  // del procés de selecció, sumant totes les empreses.
+  const placementCounts = { confirmats: 0, candidats: 0, senseAssig: 0, noFa: 0 };
+  students.forEach((s) => {
+    if (s.noFaPractiques) { placementCounts.noFa++; return; }
+    const companyEntry = companies.find((c) => c.assignats.includes(s.id));
+    if (!companyEntry) { placementCounts.senseAssig++; return; }
+    const stage = ((companyEntry.assignmentStatus || {})[s.id] || {}).stage;
+    if (stage === "signat") placementCounts.confirmats++;
+    else placementCounts.candidats++;
+  });
+  const placementData = [
+    { name: "Confirmats", value: placementCounts.confirmats, color: "#16a34a" },
+    { name: "Candidats en procés", value: placementCounts.candidats, color: "#0ea5e9" },
+    { name: "Sense assignar", value: placementCounts.senseAssig, color: "#f97316" },
+    { name: "No fa pràctiques", value: placementCounts.noFa, color: "#94a3b8" },
+  ].filter((d) => d.value > 0);
+
+  const stageData = ASSIGNMENT_STAGES.map((st) => ({
+    name: st.label,
+    candidats: companies.reduce((sum, c) => sum + Object.values(c.assignmentStatus || {}).filter((as) => as.stage === st.id).length, 0),
+  }));
+
+  const negotiationData = [
+    { name: "Pendent", value: negociacioPendentContactar, color: "#94a3b8" },
+    { name: "Esperant vacants", value: negociacioEsperant, color: "#38bdf8" },
+    { name: "Vacants confirmades", value: negociacioVacantsConfirmades, color: "#0ea5e9" },
+    { name: "Homologades", value: negociacioHomologada, color: "#16a34a" },
+    { name: "No disponibles", value: negociacioNoDisponible, color: "#ef4444" },
+  ].filter((d) => d.value > 0);
+
   return (
     <div>
       <h1 className="text-xl font-semibold text-slate-800 mb-1">Dashboard del grup {activeGroup}</h1>
@@ -1700,6 +1733,54 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         <StatTile label="Revisions de seguiment vençudes" value={revisionsPendents} tone={revisionsPendents > 0 ? "orange" : "slate"} icon={CalendarClock} />
         <StatTile label="Sense cap entrevista encara" value={senseSeguiment} tone={senseSeguiment > 0 ? "orange" : "slate"} icon={MessageCircle} />
         <StatTile label="Fan 18 anys en 30 dies" value={propersMajorsEdat} tone="slate" icon={Cake} />
+      </div>
+
+      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Visió gràfica</p>
+      <div className="flex flex-wrap gap-4 mb-8">
+        <Card className="p-5">
+          <p className="text-sm font-medium text-slate-700 mb-3">Estat de col·locació de l'alumnat</p>
+          {placementData.length === 0 ? (
+            <p className="text-xs text-slate-400">Encara no hi ha alumnat en aquest grup.</p>
+          ) : (
+            <PieChart width={280} height={220}>
+              <Pie data={placementData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2}>
+                {placementData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+              </Pie>
+              <Tooltip />
+              <Legend verticalAlign="bottom" height={48} wrapperStyle={{ fontSize: 11 }} />
+            </PieChart>
+          )}
+        </Card>
+
+        <Card className="p-5">
+          <p className="text-sm font-medium text-slate-700 mb-3">Candidats per etapa del procés</p>
+          {stageData.every((d) => d.candidats === 0) ? (
+            <p className="text-xs text-slate-400 max-w-[260px]">Encara no hi ha cap candidat assignat a cap empresa.</p>
+          ) : (
+            <BarChart width={340} height={220} data={stageData} layout="vertical" margin={{ left: 10, right: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11 }} />
+              <Tooltip />
+              <Bar dataKey="candidats" fill="#0ea5e9" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          )}
+        </Card>
+
+        <Card className="p-5">
+          <p className="text-sm font-medium text-slate-700 mb-3">Empreses per estat de negociació</p>
+          {negotiationData.length === 0 ? (
+            <p className="text-xs text-slate-400 max-w-[260px]">Encara no hi ha cap empresa donada d'alta.</p>
+          ) : (
+            <PieChart width={280} height={220}>
+              <Pie data={negotiationData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2}>
+                {negotiationData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+              </Pie>
+              <Tooltip />
+              <Legend verticalAlign="bottom" height={48} wrapperStyle={{ fontSize: 11 }} />
+            </PieChart>
+          )}
+        </Card>
       </div>
 
       <Card className="p-5">
@@ -3632,7 +3713,7 @@ function CompanyInbox({ company, onAddContact }) {
   );
 }
 
-function CompanyCard({ company: c, students, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
+function CompanyCard({ company: c, students, statuses, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
   const selectedCount = (c.activitats || []).length;
   const status = companyProgressBadge(c);
@@ -3853,7 +3934,10 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
               <>
                 <p className="text-xs text-slate-400 mb-1.5">{students.some((s) => c.assignats.includes(s.id)) ? "Assigna'n un altre:" : "Assigna alumnat:"}</p>
                 <div className="flex flex-wrap gap-2">
-                  {students.filter((s) => !c.assignats.includes(s.id)).map((s) => {
+                  {students
+                    .filter((s) => !c.assignats.includes(s.id))
+                    .filter((s) => !s.noFaPractiques && (statuses[s.id] ? statuses[s.id].aptePractiques : true))
+                    .map((s) => {
                     const elsewhere = companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
                     const affinity = activityAffinity(s.activityPreferences, c.activitats);
                     return (
@@ -3868,6 +3952,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
                     );
                   })}
                 </div>
+                <p className="text-[11px] text-slate-300 mt-1.5">Només es mostren alumnes aptes per a pràctiques (segons el càlcul automàtic) i que no estiguin marcats com "no fa pràctiques".</p>
               </>
             )}
           </div>
@@ -3908,7 +3993,7 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
   );
 }
 
-function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus }) {
+function CompaniesTab({ companies, setCompanies, students, statuses, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus }) {
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [draft, setDraft] = useState({ nom: "", regim: "Presencial", places: 1 });
@@ -3999,7 +4084,7 @@ function CompaniesTab({ companies, setCompanies, students, onAssignCompany, onTr
       <div className="grid gap-4">
         {companies.map((c) => (
           <CompanyCard
-            key={c.id} company={c} students={students} companies={companies}
+            key={c.id} company={c} students={students} statuses={statuses} companies={companies}
             expanded={expandedId === c.id}
             onToggleExpand={() => setExpandedId(expandedId === c.id ? null : c.id)}
             onUpdate={(patch) => updateCompany(c.id, patch)}
