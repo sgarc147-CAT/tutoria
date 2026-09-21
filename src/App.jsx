@@ -286,6 +286,7 @@ function companyProgressBadge(c) {
 // el currículum fins que el conveni queda signat per les quatre parts.
 const ASSIGNMENT_STAGES = [
   { id: "cv_enviat", label: "Currículum enviat" },
+  { id: "entrevista", label: "Entrevista" },
   { id: "alumne_confirmat", label: "Confirmat per l'empresa" },
   { id: "conveni", label: "Conveni en signatura" },
   { id: "signat", label: "Conveni signat" },
