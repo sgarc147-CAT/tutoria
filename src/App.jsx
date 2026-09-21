@@ -1633,7 +1633,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   // orientatiu apuntat a la fitxa.
   const homologatedCompanies = companies.filter((c) => c.homologada);
   const placesTotal = homologatedCompanies.reduce((sum, c) => sum + c.places, 0);
-  const placesAdjudicades = homologatedCompanies.reduce((sum, c) => sum + c.assignats.length, 0);
+  const placesAdjudicades = homologatedCompanies.reduce((sum, c) => sum + c.assignats.filter((id) => ((c.assignmentStatus || {})[id] || {}).stage === "signat").length, 0);
 
   const avuiIso = toIsoDate(new Date());
   const incidenciesObertes = students.reduce((sum, s) => sum + (s.incidents || []).filter((n) => !n.resolt).length, 0);
@@ -1676,7 +1676,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         <StatTile label="Places de pràctiques" value={placesTotal} tone="slate" icon={Building2} />
         <StatTile label="Places adjudicades" value={`${placesAdjudicades}/${placesTotal}`} tone="green" icon={CheckCircle2} />
       </div>
-      <p className="text-xs text-slate-400 mb-6">Les places de pràctiques i adjudicades només compten empreses homologades (compartides entre grups) — les que encara estan en negociació no hi sumen.</p>
+      <p className="text-xs text-slate-400 mb-6">Les places de pràctiques i adjudicades només compten empreses homologades (compartides entre grups); "adjudicades" són les confirmades amb conveni signat, no els candidats en procés de selecció.</p>
 
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Negociacions amb empreses</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
@@ -3379,13 +3379,13 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
           {companies.map((c) => {
             const isCurrentlyAssigned = c.id === assignedCompanyId;
             const isReady = !!c.homologada;
-            const placesLeft = c.places - c.assignats.filter((id) => id !== student.id).length;
-            const full = placesLeft <= 0;
-            const disabled = !isCurrentlyAssigned && (!isReady || full);
+            const disabled = !isCurrentlyAssigned && !isReady;
+            const confirmedCount = c.assignats.filter((id) => id !== student.id && ((c.assignmentStatus || {})[id] || {}).stage === "signat").length;
+            const confirmedLeft = c.places - confirmedCount;
             let label;
             if (!isReady && !isCurrentlyAssigned) label = `${c.nom} (no homologada)`;
-            else if (full && !isCurrentlyAssigned) label = `${c.nom} (sense places)`;
-            else label = `${c.nom} (${placesLeft} places lliures)`;
+            else if (confirmedLeft <= 0) label = `${c.nom} (${confirmedCount}/${c.places} confirmats — com a candidat/a)`;
+            else label = `${c.nom} (${confirmedLeft} places confirmades lliures)`;
             return (
               <option key={c.id} value={c.id} disabled={disabled}>
                 {label}
@@ -3393,7 +3393,9 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
             );
           })}
         </select>
-        <p className="text-xs text-slate-400 mt-2">Només es poden assignar empreses amb l'estat de negociació "Homologada" i amb places lliures.</p>
+        <p className="text-xs text-slate-400 mt-2">
+          Només es poden assignar empreses amb l'estat de negociació "Homologada". Es pot assignar com a candidat/a encara que ja no hi hagi places confirmades lliures — les places només compten quan s'arriba a "Conveni signat".
+        </p>
       </Card>
 
       {assignedCompany && (
@@ -3612,6 +3614,10 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
   const status = companyProgressBadge(c);
   const contacts = [...(c.contacts || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
   const [newContact, setNewContact] = useState({ data: "", tipus: "Correu enviat", notes: "" });
+  // Les places només es "gasten" quan un candidat arriba a conveni signat — mentre és
+  // un procés de selecció, es poden tenir més candidats assignats que places reals.
+  const confirmedCount = c.assignats.filter((id) => ((c.assignmentStatus || {})[id] || {}).stage === "signat").length;
+  const candidatesInProcess = c.assignats.length - confirmedCount;
 
   function submitContact() {
     if (!newContact.data) return;
@@ -3633,7 +3639,8 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
           <Badge tone={status.tone}>{status.label}</Badge>
           {c.noDisponible && <Badge tone="red">No disponible</Badge>}
           <Badge tone="sky">{c.regim}</Badge>
-          <Badge tone={c.assignats.length >= c.places ? "orange" : "slate"}>{c.assignats.length}/{c.places} places</Badge>
+          <Badge tone={confirmedCount > c.places ? "red" : confirmedCount >= c.places ? "orange" : "slate"}>{confirmedCount}/{c.places} confirmats</Badge>
+          {candidatesInProcess > 0 && <Badge tone="sky">{candidatesInProcess} candidat(s) en procés</Badge>}
           <Badge tone="slate">{selectedCount}/{totalActivitats} activitats</Badge>
           <button
             onClick={() => { if (window.confirm(`Enviar "${c.nom}" a la paperera? La podràs restaurar des de la pestanya "Paperera".`)) onRemove(); }}
@@ -3824,16 +3831,12 @@ function CompanyCard({ company: c, students, companies, expanded, onToggleExpand
                 <div className="flex flex-wrap gap-2">
                   {students.filter((s) => !c.assignats.includes(s.id)).map((s) => {
                     const elsewhere = companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
-                    const full = c.assignats.length >= c.places;
                     const affinity = activityAffinity(s.activityPreferences, c.activitats);
                     return (
                       <button
                         key={s.id} onClick={() => onToggleAssign(s.id)}
-                        disabled={full}
-                        title={elsewhere ? "Assignat a una altra empresa — es reassignarà aquí" : full ? "Sense places lliures" : ""}
-                        className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                          full ? "bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
-                        }`}
+                        title={elsewhere ? "Assignat a una altra empresa — es reassignarà aquí" : ""}
+                        className="px-2.5 py-1 rounded-full text-xs border transition-colors bg-white text-slate-500 border-slate-200 hover:border-sky-300"
                       >
                         {s.nom} {s.cognoms} <span className="opacity-60">({s.grup || "ADM2"})</span>{elsewhere ? " ↺" : ""}
                         {affinity != null && <span className={affinity >= 70 ? "text-green-600" : affinity >= 40 ? "text-orange-500" : "text-red-500"}> · {affinity}%</span>}
