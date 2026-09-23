@@ -80,6 +80,9 @@ export default function AuthGate() {
         return;
       }
       setUser({ email: payload.email, name: payload.name, picture: payload.picture });
+      // Perquè l'App pugui deixar constància de qui fa cada canvi sensible (assignacions,
+      // eliminacions...) a l'historial d'activitat.
+      window.__CURRENT_USER_EMAIL__ = payload.email;
       setStatus("authorizing");
 
       const accessToken = await requestDriveToken();

@@ -7,7 +7,7 @@ import {
   ChevronLeft, X, Plus, Trash2, Save, Search, GraduationCap, BriefcaseBusiness,
   CalendarDays, CalendarOff, Percent, ClipboardList, ArrowLeft, Footprints, Bus,
   MessageCircle, MessageSquare, ShieldAlert, CalendarClock, Cake, Download, RefreshCw,
-  Mail, Handshake, PhoneCall, FileCheck2
+  Mail, Handshake, PhoneCall, FileCheck2, History, ListChecks, ArrowRightLeft
 } from "lucide-react";
 
 /* ---------------------------------------------------------------------- */
@@ -292,6 +292,9 @@ const ASSIGNMENT_STAGES = [
   { id: "conveni", label: "Conveni en signatura" },
   { id: "signat", label: "Conveni signat" },
 ];
+// Nombre màxim d'entrades que es conserven a l'historial d'activitat (les més antigues
+// es descarten soles).
+const ACTIVITY_LOG_CAP = 300;
 const SIGNATURE_ROLES = [
   { id: "tutor", label: "Tutor/a" },
   { id: "empresa", label: "Empresa" },
@@ -734,7 +737,7 @@ function parseActaWorkbook(workbook) {
 /* 4. COMPONENTS AUXILIARS                                                */
 /* ---------------------------------------------------------------------- */
 
-function Badge({ tone, children, icon: Icon }) {
+function Badge({ tone, children, icon: Icon, title }) {
   const tones = {
     green: "bg-green-50 text-green-700 border-green-200",
     red: "bg-red-50 text-red-700 border-red-200",
@@ -743,7 +746,7 @@ function Badge({ tone, children, icon: Icon }) {
     slate: "bg-slate-50 text-slate-600 border-slate-200",
   };
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${tones[tone]}`}>
+    <span title={title} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${tones[tone]}`}>
       {Icon && <Icon size={13} />}
       {children}
     </span>
@@ -988,6 +991,27 @@ function sameMap(a, b) {
   return aKeys.every((k) => aObj[k] === bObj[k]);
 }
 
+// Compara dos historials d'activitat pel conjunt d'ids que contenen (les entrades són
+// immutables un cop creades, no cal comparar-ne el contingut).
+function sameLog(a, b) {
+  const aArr = a || [];
+  const bArr = b || [];
+  if (aArr.length !== bArr.length) return false;
+  const bIds = new Set(bArr.map((e) => e.id));
+  return aArr.every((e) => bIds.has(e.id));
+}
+
+// Fusiona dos historials d'activitat per id (unió), ordenats per data i retallats al
+// límit — cap entrada es perd mai, encara que dues persones en registrin a la vegada.
+function mergeActivityLog(remote, local) {
+  const map = new Map();
+  (remote || []).forEach((e) => map.set(e.id, e));
+  (local || []).forEach((e) => map.set(e.id, e));
+  return Array.from(map.values())
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .slice(-ACTIVITY_LOG_CAP);
+}
+
 // Compta les hores de pràctiques dia a dia dins d'un període (en lloc de fer una
 // mitjana per setmanes), excloent sempre els caps de setmana i qualsevol data marcada
 // com a festiu/vacances al calendari. Retorna també els conflictes amb l'horari de 1r.
@@ -1041,6 +1065,8 @@ const TABS = [
   { id: "calendari", label: "Calendari de festius", icon: CalendarOff },
   { id: "students", label: "Alumnat", icon: Users },
   { id: "companies", label: "Empreses", icon: Building2 },
+  { id: "candidacies", label: "Seguiment de candidatures", icon: ListChecks },
+  { id: "historial", label: "Historial", icon: History },
   { id: "trash", label: "Paperera", icon: Trash2 },
 ];
 
@@ -1087,6 +1113,20 @@ export default function App() {
   // cap fusió posterior pugui ressuscitar un alumne/empresa que s'ha esborrat de veritat.
   const [deletedStudentIds, setDeletedStudentIds] = useState(initial.deletedStudentIds || {});
   const [deletedCompanyIds, setDeletedCompanyIds] = useState(initial.deletedCompanyIds || {});
+  // Historial d'activitat: registre dels canvis més sensibles (assignacions, canvis
+  // d'estat de negociació, eliminacions...), perquè dues persones treballant alhora
+  // puguin veure qui ha fet què i desfer confusions. Es limita a les últimes entrades
+  // perquè el fitxer no creixi sense parar.
+  const [activityLog, setActivityLog] = useState(initial.activityLog || []);
+  function logActivity(action, details) {
+    const entry = {
+      id: "log" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      timestamp: new Date().toISOString(),
+      user: (typeof window !== "undefined" && window.__CURRENT_USER_EMAIL__) || "algú",
+      action, details,
+    };
+    setActivityLog((prev) => [...prev, entry].slice(-ACTIVITY_LOG_CAP));
+  }
 
   // Manté un registre de l'últim estat sincronitzat amb el Drive, per poder detectar quins
   // alumnes/empreses concrets han canviat (i marcar-los amb lastModified) sense haver de
@@ -1097,7 +1137,7 @@ export default function App() {
   // pugui reintentar amb dades fresques quan hi ha desats en cua.
   const latestRef = useRef(null);
   useEffect(() => {
-    latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm };
+    latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog };
   });
 
   // Evita que dues operacions de Drive (el desat automàtic i l'actualització periòdica)
@@ -1125,6 +1165,7 @@ export default function App() {
         if (!sameRecords(finalCompanies, stampedCompanies)) setCompanies(finalCompanies);
         if (merged.deletedStudentIds && !sameMap(merged.deletedStudentIds, cur.deletedStudentIds)) setDeletedStudentIds(merged.deletedStudentIds);
         if (merged.deletedCompanyIds && !sameMap(merged.deletedCompanyIds, cur.deletedCompanyIds)) setDeletedCompanyIds(merged.deletedCompanyIds);
+        if (merged.activityLog && !sameLog(merged.activityLog, cur.activityLog)) setActivityLog(merged.activityLog);
         setSaveStatus("saved");
       } else {
         setSaveStatus("error");
@@ -1143,7 +1184,7 @@ export default function App() {
     setSaveStatus("pending");
     const t = setTimeout(() => { runSave(); }, 800);
     return () => clearTimeout(t);
-  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm]);
+  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog]);
 
   useEffect(() => {
     function handleBeforeUnload(e) {
@@ -1180,6 +1221,8 @@ export default function App() {
         lastSyncedRef.current = { ...lastSyncedRef.current, companies: merged };
         return sameRecords(merged, prev) ? prev : merged;
       });
+      const mergedLog = mergeActivityLog(remote.activityLog, latestRef.current.activityLog);
+      if (!sameLog(mergedLog, latestRef.current.activityLog)) setActivityLog(mergedLog);
     }
     const interval = setInterval(pull, 45000);
     function onVisible() { if (document.visibilityState === "visible") pull(); }
@@ -1188,7 +1231,7 @@ export default function App() {
   }, []);
 
   function downloadBackup() {
-    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm };
+    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1336,6 +1379,10 @@ export default function App() {
     });
   }
   function assignCompanyToStudent(studentId, companyId) {
+    const student = students.find((s) => s.id === studentId);
+    const studentName = student ? `${student.nom} ${student.cognoms}` : "un alumne";
+    const oldCompany = companies.find((c) => c.assignats.includes(studentId));
+    const newCompany = companyId ? companies.find((c) => c.id === companyId) : null;
     setCompanies((prev) => prev.map((c) => {
       const withoutStudent = c.assignats.filter((id) => id !== studentId);
       if (c.id === companyId) {
@@ -1347,8 +1394,21 @@ export default function App() {
       }
       return { ...c, assignats: withoutStudent };
     }));
+    if (newCompany && oldCompany && oldCompany.id !== newCompany.id) {
+      logActivity("Reassignació", `${studentName}: ${oldCompany.nom} → ${newCompany.nom}`);
+    } else if (newCompany && !oldCompany) {
+      logActivity("Assignació", `${studentName} → ${newCompany.nom}`);
+    } else if (!newCompany && oldCompany) {
+      logActivity("Desassignació", `${studentName} (era a ${oldCompany.nom})`);
+    }
   }
   function updateAssignmentStatus(companyId, studentId, patch) {
+    const company = companies.find((c) => c.id === companyId);
+    const student = students.find((s) => s.id === studentId);
+    if (patch.stage && company && student) {
+      const stageLabel = (ASSIGNMENT_STAGES.find((s) => s.id === patch.stage) || {}).label || patch.stage;
+      logActivity("Canvi d'etapa", `${student.nom} ${student.cognoms} a ${company.nom}: ${stageLabel}`);
+    }
     setCompanies((prev) => prev.map((c) => {
       if (c.id !== companyId) return c;
       const current = (c.assignmentStatus && c.assignmentStatus[studentId]) || defaultAssignmentStatus();
@@ -1474,6 +1534,7 @@ export default function App() {
     setStudents((prev) => prev.map((s) => (s.id === id ? { ...s, trashedAt: null } : s)));
   }
   function deleteStudentForever(id) {
+    const student = students.find((s) => s.id === id);
     setStudents((prev) => prev.filter((s) => s.id !== id));
     setSchedules((prev) => {
       const next = { ...prev };
@@ -1482,6 +1543,7 @@ export default function App() {
     });
     setCompanies((prev) => prev.map((c) => ({ ...c, assignats: c.assignats.filter((sid) => sid !== id) })));
     setDeletedStudentIds((prev) => ({ ...prev, [id]: new Date().toISOString() }));
+    if (student) logActivity("Eliminació definitiva", `Alumne: ${student.nom} ${student.cognoms}`);
   }
   function trashCompany(id) {
     setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, trashedAt: new Date().toISOString(), assignats: [] } : c)));
@@ -1490,8 +1552,10 @@ export default function App() {
     setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, trashedAt: null } : c)));
   }
   function deleteCompanyForever(id) {
+    const company = companies.find((c) => c.id === id);
     setCompanies((prev) => prev.filter((c) => c.id !== id));
     setDeletedCompanyIds((prev) => ({ ...prev, [id]: new Date().toISOString() }));
+    if (company) logActivity("Eliminació definitiva", `Empresa: ${company.nom}`);
   }
 
   const selectedStudent = students.find((s) => s.id === selectedStudentId);
@@ -1548,7 +1612,13 @@ export default function App() {
 
       {/* Main */}
       <main className="flex-1 p-4 md:p-8 max-w-6xl">
-        {tab === "dashboard" && <Dashboard activeGroup={activeGroup} students={groupStudents} statuses={statuses} scheduleStatuses={scheduleStatuses} companies={activeCompanies} />}
+        {tab === "dashboard" && (
+          <Dashboard
+            activeGroup={activeGroup} students={groupStudents} statuses={statuses} scheduleStatuses={scheduleStatuses} companies={activeCompanies}
+            onSelectStudent={(id) => { setTab("students"); setSelectedStudentId(id); }}
+            onOpenCandidacies={() => setTab("candidacies")}
+          />
+        )}
         {tab === "import" && (
           <ImportTab
             activeGroup={activeGroup} students={groupStudents} onImport={addImportedStudents} onImportNotes={importNotesGrid}
@@ -1600,8 +1670,18 @@ export default function App() {
           />
         )}
         {tab === "companies" && (
-          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} statuses={statuses} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} />
+          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} statuses={statuses} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} onLogActivity={logActivity} />
         )}
+        {tab === "candidacies" && (
+          <CandidaciesTab
+            activeGroup={activeGroup} students={groupStudents} companies={activeCompanies}
+            onSelectStudent={(id) => setSelectedStudentId(id)}
+            onSelectTab={(t) => setTab(t)}
+            onUpdateAssignmentStatus={updateAssignmentStatus}
+            onToggleAssign={(companyId, studentId) => assignCompanyToStudent(studentId, null)}
+          />
+        )}
+        {tab === "historial" && <HistorialTab log={activityLog} />}
         {tab === "trash" && (
           <TrashTab
             students={students.filter((s) => s.trashedAt)}
@@ -1621,7 +1701,7 @@ export default function App() {
 /* 7. DASHBOARD                                                           */
 /* ---------------------------------------------------------------------- */
 
-function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companies }) {
+function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companies, onSelectStudent, onOpenCandidacies }) {
   const total = students.length;
   const menors = students.filter((s) => { const age = calcAge(s.dataNaixement); return age != null && age < 18; }).length;
   const majors = students.filter((s) => { const age = calcAge(s.dataNaixement); return age != null && age >= 18; }).length;
@@ -1701,14 +1781,16 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     { name: "No fa pràctiques", value: placementCounts.noFa, color: "#94a3b8" },
   ].filter((d) => d.value > 0);
 
+  // Candidats en procés d'aquest grup (activeCandidatesList ja es basa en "assignats",
+  // no només en "assignmentStatus", perquè també inclogui alumnat assignat abans que
+  // existís aquest seguiment detallat).
+  const candidates = activeCandidatesList(students, companies);
+
   // Candidats per etapa, però NOMÉS els d'aquest grup (una empresa compartida pot tenir
   // candidats de l'altre grup barrejats, i abans es comptaven tots junts).
   const stageData = ASSIGNMENT_STAGES.map((st) => ({
     name: st.label,
-    candidats: companies.reduce(
-      (sum, c) => sum + Object.entries(c.assignmentStatus || {}).filter(([sid, as]) => as.stage === st.id && groupStudentIds.has(sid)).length,
-      0
-    ),
+    candidats: candidates.filter((c) => c.stage === st.id).length,
   }));
 
   const negotiationData = [
@@ -1809,6 +1891,34 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
           )}
         </Card>
       </div>
+
+      <Card className="p-5 mb-8">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+          <p className="text-sm font-medium text-slate-700">Candidats en procés</p>
+          <button onClick={onOpenCandidacies} className="text-xs text-sky-600 hover:underline flex items-center gap-1">
+            <ListChecks size={13} /> Veure-ho tot a "Seguiment de candidatures"
+          </button>
+        </div>
+        <p className="text-xs text-slate-400 mb-3">Només alumnat del grup {activeGroup}.</p>
+        {candidates.length === 0 ? (
+          <p className="text-xs text-slate-400">Ningú en procés de selecció ara mateix.</p>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {candidates.slice(0, 8).map(({ student, company, stage }) => (
+              <button
+                key={student.id + company.id} onClick={() => onSelectStudent(student.id)}
+                className="w-full py-2.5 flex flex-wrap items-center justify-between gap-2 text-left hover:bg-slate-50 -mx-1 px-1 rounded"
+              >
+                <span className="text-sm text-slate-700">{student.nom} {student.cognoms} <span className="text-slate-400">→ {company.nom}</span></span>
+                <Badge tone="sky">{(ASSIGNMENT_STAGES.find((s) => s.id === stage) || {}).label || stage}</Badge>
+              </button>
+            ))}
+            {candidates.length > 8 && (
+              <p className="text-xs text-slate-400 pt-2">...i {candidates.length - 8} més.</p>
+            )}
+          </div>
+        )}
+      </Card>
 
       <Card className="p-5">
         <p className="text-sm font-medium text-slate-700 mb-4">Estat individual</p>
@@ -3424,6 +3534,23 @@ function activityAffinity(preferences, companyActivities) {
   return Math.round((matched / preferences.length) * 100);
 }
 
+// Llista d'alumnat en procés de selecció (assignat a una empresa però encara sense
+// conveni signat), amb l'empresa i l'etapa actual de cadascú. Es fa servir tant a la
+// taula compacta del Dashboard com a la pestanya dedicada "Seguiment de candidatures".
+function activeCandidatesList(students, companies) {
+  const list = [];
+  companies.forEach((c) => {
+    c.assignats.forEach((sid) => {
+      const as = (c.assignmentStatus && c.assignmentStatus[sid]) || defaultAssignmentStatus();
+      if (as.stage === "signat") return;
+      const student = students.find((s) => s.id === sid);
+      if (!student) return;
+      list.push({ student, company: c, stage: as.stage });
+    });
+  });
+  return list;
+}
+
 function ActivityPreferencesCard({ student, assignedCompany, onUpdateStudent }) {
   const prefs = student.activityPreferences || [];
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
@@ -3504,7 +3631,18 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
       <Card className="p-5">
         <p className="text-sm font-medium text-slate-700 mb-3">Empresa assignada</p>
         <select
-          value={assignedCompanyId || ""} onChange={(e) => onAssignCompany(e.target.value || null)}
+          value={assignedCompanyId || ""}
+          onChange={(e) => {
+            const newId = e.target.value || null;
+            const oldCompany = companies.find((c) => c.id === assignedCompanyId);
+            const newCompany = newId ? companies.find((c) => c.id === newId) : null;
+            if (oldCompany && !newCompany) {
+              if (!window.confirm(`Desassignar ${student.nom} ${student.cognoms} de ${oldCompany.nom}? Es perdrà l'etapa i les signatures registrades.`)) return;
+            } else if (oldCompany && newCompany && oldCompany.id !== newCompany.id) {
+              if (!window.confirm(`Moure ${student.nom} ${student.cognoms} de ${oldCompany.nom} a ${newCompany.nom}? Es perdrà l'etapa i les signatures que tingués a l'empresa anterior.`)) return;
+            }
+            onAssignCompany(newId);
+          }}
           className="w-full sm:w-80 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-300"
         >
           <option value="">Sense assignar</option>
@@ -3771,8 +3909,17 @@ function CompanyCard({ company: c, students, statuses, companies, expanded, onTo
           <Badge tone={status.tone}>{status.label}</Badge>
           {c.noDisponible && <Badge tone="red">No disponible</Badge>}
           <Badge tone="sky">{c.regim}</Badge>
-          <Badge tone={confirmedCount > c.places ? "red" : confirmedCount >= c.places ? "orange" : "slate"}>{confirmedCount}/{c.places} confirmats</Badge>
-          {candidatesInProcess > 0 && <Badge tone="sky">{candidatesInProcess} candidat(s) en procés</Badge>}
+          <Badge
+            tone={confirmedCount > c.places ? "red" : confirmedCount >= c.places ? "orange" : "slate"}
+            title="Compta alumnat de tots els grups — l'empresa es comparteix entre ADM2 i ADM4."
+          >
+            {confirmedCount}/{c.places} confirmats
+          </Badge>
+          {candidatesInProcess > 0 && (
+            <Badge tone="sky" title="Compta alumnat de tots els grups — l'empresa es comparteix entre ADM2 i ADM4.">
+              {candidatesInProcess} candidat(s) en procés
+            </Badge>
+          )}
           <Badge tone="slate">{selectedCount}/{totalActivitats} activitats</Badge>
           <button
             onClick={() => { if (window.confirm(`Enviar "${c.nom}" a la paperera? La podràs restaurar des de la pestanya "Paperera".`)) onRemove(); }}
@@ -3918,7 +4065,12 @@ function CompanyCard({ company: c, students, statuses, companies, expanded, onTo
                     <Card key={s.id} className="p-3 bg-slate-50">
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-sm font-medium text-slate-700">{s.nom} {s.cognoms} <span className="text-xs text-slate-400 font-normal">({s.grup || "ADM2"})</span></p>
-                        <button onClick={() => onToggleAssign(s.id)} className="text-xs text-red-500 hover:underline">Desassigna</button>
+                        <button
+                          onClick={() => { if (window.confirm(`Desassignar ${s.nom} ${s.cognoms} de ${c.nom}? Es perdrà l'etapa i les signatures que hi hagi registrades per a aquesta empresa.`)) onToggleAssign(s.id); }}
+                          className="text-xs text-red-500 hover:underline"
+                        >
+                          Desassigna
+                        </button>
                       </div>
                       <div className="flex flex-wrap gap-1.5 mb-2">
                         {ASSIGNMENT_STAGES.map((st) => (
@@ -3965,12 +4117,17 @@ function CompanyCard({ company: c, students, statuses, companies, expanded, onTo
                     .filter((s) => !c.assignats.includes(s.id))
                     .filter((s) => !s.noFaPractiques && (statuses[s.id] ? statuses[s.id].aptePractiques : true))
                     .map((s) => {
-                    const elsewhere = companies.some((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
+                    const elsewhereCompany = companies.find((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
+                    const elsewhere = !!elsewhereCompany;
                     const affinity = activityAffinity(s.activityPreferences, c.activitats);
                     return (
                       <button
-                        key={s.id} onClick={() => onToggleAssign(s.id)}
-                        title={elsewhere ? "Assignat a una altra empresa — es reassignarà aquí" : ""}
+                        key={s.id}
+                        onClick={() => {
+                          if (elsewhere && !window.confirm(`${s.nom} ${s.cognoms} ja és candidat/a a "${elsewhereCompany.nom}". Vols moure'l/la a "${c.nom}"? Es perdrà l'etapa i les signatures que tingués a l'altra empresa.`)) return;
+                          onToggleAssign(s.id);
+                        }}
+                        title={elsewhere ? `Assignat/da a ${elsewhereCompany.nom} — es reassignarà aquí` : ""}
                         className="px-2.5 py-1 rounded-full text-xs border transition-colors bg-white text-slate-500 border-slate-200 hover:border-sky-300"
                       >
                         {s.nom} {s.cognoms} <span className="opacity-60">({s.grup || "ADM2"})</span>{elsewhere ? " ↺" : ""}
@@ -4020,7 +4177,85 @@ function CompanyCard({ company: c, students, statuses, companies, expanded, onTo
   );
 }
 
-function CompaniesTab({ companies, setCompanies, students, statuses, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus }) {
+function CandidaciesTab({ activeGroup, students, companies, onSelectStudent, onSelectTab, onUpdateAssignmentStatus, onToggleAssign }) {
+  const candidates = activeCandidatesList(students, companies);
+  return (
+    <div>
+      <h1 className="text-xl font-semibold text-slate-800 mb-1">Seguiment de candidatures — {activeGroup}</h1>
+      <p className="text-sm text-slate-500 mb-6">
+        Tot l'alumnat d'aquest grup en procés de selecció (assignat a una empresa, però encara sense conveni signat), amb l'empresa i l'etapa de cadascú — pots avançar-los des d'aquí mateix.
+      </p>
+      {candidates.length === 0 ? (
+        <Card className="p-5"><p className="text-sm text-slate-400">Ningú en procés de selecció ara mateix.</p></Card>
+      ) : (
+        <div className="space-y-2">
+          {candidates.map(({ student, company, stage }) => (
+            <Card key={student.id + company.id} className="p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <button
+                  onClick={() => { onSelectStudent(student.id); onSelectTab("students"); }}
+                  className="text-sm font-medium text-slate-800 hover:text-sky-600"
+                >
+                  {student.nom} {student.cognoms} <span className="text-xs text-slate-400 font-normal">({student.grup || "ADM2"})</span>
+                </button>
+                <span className="text-xs text-slate-400 flex items-center gap-1"><ArrowRightLeft size={12} /> {company.nom}</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {ASSIGNMENT_STAGES.map((st) => (
+                  <button
+                    key={st.id} onClick={() => onUpdateAssignmentStatus(company.id, student.id, { stage: st.id })}
+                    className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                      stage === st.id ? "bg-sky-500 text-white border-sky-500" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
+                    }`}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+                <button
+                  onClick={() => { if (window.confirm(`Desassignar ${student.nom} ${student.cognoms} de ${company.nom}? Es perdrà l'etapa i les signatures registrades.`)) onToggleAssign(company.id, student.id); }}
+                  className="px-2.5 py-1 rounded-full text-xs border border-red-200 text-red-500 hover:bg-red-50"
+                >
+                  Desassigna
+                </button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistorialTab({ log }) {
+  const sorted = [...log].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return (
+    <div>
+      <h1 className="text-xl font-semibold text-slate-800 mb-1">Historial d'activitat</h1>
+      <p className="text-sm text-slate-500 mb-6">
+        Registre dels canvis més sensibles (assignacions, estats de negociació, eliminacions...) fets per qualsevol de les persones amb accés — per poder reconstruir què ha passat si mai hi ha un dubte. Es conserven les últimes {ACTIVITY_LOG_CAP} entrades.
+      </p>
+      {sorted.length === 0 ? (
+        <Card className="p-5"><p className="text-sm text-slate-400">Encara no hi ha cap activitat registrada.</p></Card>
+      ) : (
+        <div className="space-y-1.5">
+          {sorted.map((entry) => (
+            <Card key={entry.id} className="p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className="text-xs font-medium text-slate-700">{entry.action}</span>
+                  <span className="text-xs text-slate-500 ml-2">{entry.details}</span>
+                </div>
+                <span className="text-[11px] text-slate-400 whitespace-nowrap">{new Date(entry.timestamp).toLocaleString("ca")} · {entry.user}</span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CompaniesTab({ companies, setCompanies, students, statuses, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus, onLogActivity }) {
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [draft, setDraft] = useState({ nom: "", regim: "Presencial", places: 1 });
@@ -4042,7 +4277,14 @@ function CompaniesTab({ companies, setCompanies, students, statuses, onAssignCom
     setExpandedId(id);
   }
 
+  const MILESTONE_LABELS = { contactada: "Contactada", vacantsConfirmades: "Vacants confirmades", homologada: "Homologada", noDisponible: "No disponible" };
   function updateCompany(id, patch) {
+    const company = companies.find((c) => c.id === id);
+    const milestoneKey = Object.keys(patch).find((k) => k in MILESTONE_LABELS);
+    if (company && milestoneKey) {
+      const turnedOn = patch[milestoneKey];
+      onLogActivity(turnedOn ? "Fita marcada" : "Fita desmarcada", `${company.nom}: ${MILESTONE_LABELS[milestoneKey]}`);
+    }
     setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   }
 
@@ -4082,7 +4324,8 @@ function CompaniesTab({ companies, setCompanies, students, statuses, onAssignCom
           <Plus size={15} /> Nova empresa
         </button>
       </div>
-      <p className="text-sm text-slate-500 mb-6">Dades de contacte, responsable, tutor de pràctiques, alumnat assignat i pla d'activitats de cada empresa col·laboradora.</p>
+      <p className="text-sm text-slate-500 mb-1">Dades de contacte, responsable, tutor de pràctiques, alumnat assignat i pla d'activitats de cada empresa col·laboradora.</p>
+      <p className="text-xs text-slate-400 mb-6">Les empreses es comparteixen entre grups — l'alumnat i els comptadors que veus aquí poden incloure candidats d'ADM2 i ADM4 alhora, a diferència del Dashboard, que només mostra el grup actiu.</p>
 
       {adding && (
         <Card className="p-5 mb-5">
