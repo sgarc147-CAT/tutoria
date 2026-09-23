@@ -106,10 +106,25 @@ export function mergeDeletedMap(remote = {}, local = {}) {
   return out;
 }
 
+const ACTIVITY_LOG_CAP = 300;
+
+// Fusiona dos historials d'activitat per id (unió): cap entrada es perd encara que dues
+// persones en registrin a la vegada. Es queden només les últimes ACTIVITY_LOG_CAP un cop
+// fusionades i ordenades per data.
+export function mergeActivityLog(remote = [], local = []) {
+  const map = new Map();
+  (remote || []).forEach((e) => map.set(e.id, e));
+  (local || []).forEach((e) => map.set(e.id, e));
+  return Array.from(map.values())
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+    .slice(-ACTIVITY_LOG_CAP);
+}
+
 // Fusiona el document sencer: alumnat i empreses es combinen registre a registre (veure
-// mergeListById), respectant sempre les eliminacions fetes a qualsevol banda; la resta de
-// camps (configuració, calendari...) es queden amb el valor local, ja que canvien molt
-// menys sovint i el risc de xoc és molt més baix.
+// mergeListById), respectant sempre les eliminacions fetes a qualsevol banda; l'historial
+// d'activitat es combina per unió (mergeActivityLog); la resta de camps (configuració,
+// calendari...) es queden amb el valor local, ja que canvien molt menys sovint i el risc
+// de xoc és molt més baix.
 export function mergeSharedData(remote, local) {
   if (!remote) return local;
   const deletedStudentIds = mergeDeletedMap(remote.deletedStudentIds, local.deletedStudentIds);
@@ -120,6 +135,7 @@ export function mergeSharedData(remote, local) {
     companies: mergeListById(remote.companies, local.companies, deletedCompanyIds),
     deletedStudentIds,
     deletedCompanyIds,
+    activityLog: mergeActivityLog(remote.activityLog, local.activityLog),
   };
 }
 
