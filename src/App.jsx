@@ -1631,12 +1631,19 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   const fentPractiques = students.filter((s) => assignedIds.has(s.id)).length;
   const noFaPractiquesCount = students.filter((s) => s.noFaPractiques).length;
   const senseAssignar = total - fentPractiques - noFaPractiquesCount;
+  // Alumnat d'aquest grup concret — cal per filtrar-hi qualsevol xifra que surti d'una
+  // empresa (compartida entre grups), perquè els gràfics/indicadors només reflecteixin
+  // aquest grup i no barregin candidats d'un altre.
+  const groupStudentIds = new Set(students.map((s) => s.id));
   // Només compten com a places reals les de les empreses ja homologades — mentre no ho
   // estiguin, no hi ha cap plaça confirmada de veritat, encara que hi hagi un número
-  // orientatiu apuntat a la fitxa.
+  // orientatiu apuntat a la fitxa. "Adjudicades" només compta alumnat d'aquest grup.
   const homologatedCompanies = companies.filter((c) => c.homologada);
   const placesTotal = homologatedCompanies.reduce((sum, c) => sum + c.places, 0);
-  const placesAdjudicades = homologatedCompanies.reduce((sum, c) => sum + c.assignats.filter((id) => ((c.assignmentStatus || {})[id] || {}).stage === "signat").length, 0);
+  const placesAdjudicades = homologatedCompanies.reduce(
+    (sum, c) => sum + c.assignats.filter((id) => groupStudentIds.has(id) && ((c.assignmentStatus || {})[id] || {}).stage === "signat").length,
+    0
+  );
 
   const avuiIso = toIsoDate(new Date());
   const incidenciesObertes = students.reduce((sum, s) => sum + (s.incidents || []).filter((n) => !n.resolt).length, 0);
@@ -1654,47 +1661,63 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     return properIso >= avuiIso && properIso <= en30diesIso;
   }).length;
 
-  const negociacioEsperant = companies.filter((c) => c.contactada && !c.vacantsConfirmades).length;
-  const negociacioVacantsConfirmades = companies.filter((c) => c.vacantsConfirmades && !c.homologada).length;
+  // Les fites de negociació (contactada / vacants confirmades / homologada) NO
+  // s'exclouen entre elles — una mateixa empresa sol tenir-les totes marcades a mesura
+  // que avança. Per això cada indicador compta el tic tal qual, i no sumen el total
+  // d'empreses (una empresa homologada també compta a "contactada" i "vacants
+  // confirmades", ja que hi va passar abans).
+  const negociacioContactada = companies.filter((c) => c.contactada).length;
+  const negociacioVacantsConfirmades = companies.filter((c) => c.vacantsConfirmades).length;
   const negociacioHomologada = companies.filter((c) => c.homologada).length;
   const negociacioPendentContactar = companies.filter((c) => !c.contactada).length;
   const negociacioNoDisponible = companies.filter((c) => c.noDisponible).length;
   const conveniPendentSignatures = companies.reduce((sum, c) => {
-    const statuses = Object.values(c.assignmentStatus || {});
-    return sum + statuses.filter((as) => as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean)).length;
+    const entries = Object.entries(c.assignmentStatus || {}).filter(([sid]) => groupStudentIds.has(sid));
+    return sum + entries.filter(([, as]) => as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean)).length;
   }, 0);
 
-  // Dades pels gràfics: estat de col·locació de cada alumne (confirmat / candidat en
-  // procés / sense assignar / no fa pràctiques) i quants candidats hi ha a cada etapa
-  // del procés de selecció, sumant totes les empreses.
-  const placementCounts = { confirmats: 0, candidats: 0, senseAssig: 0, noFa: 0 };
+  // Dades pels gràfics: estat de col·locació de cada alumne d'aquest grup. Distingeix
+  // "sense assignar" (apte, però encara sense gestionar) de "encara no apte" (el càlcul
+  // automàtic del 80% encara no li ho permet) — són coses molt diferents i abans es
+  // barrejaven totes dues sota "sense assignar".
+  const placementCounts = { confirmats: 0, candidats: 0, senseAssigApte: 0, noApte: 0, noFa: 0 };
   students.forEach((s) => {
     if (s.noFaPractiques) { placementCounts.noFa++; return; }
     const companyEntry = companies.find((c) => c.assignats.includes(s.id));
-    if (!companyEntry) { placementCounts.senseAssig++; return; }
-    const stage = ((companyEntry.assignmentStatus || {})[s.id] || {}).stage;
-    if (stage === "signat") placementCounts.confirmats++;
-    else placementCounts.candidats++;
+    if (companyEntry) {
+      const stage = ((companyEntry.assignmentStatus || {})[s.id] || {}).stage;
+      if (stage === "signat") placementCounts.confirmats++;
+      else placementCounts.candidats++;
+      return;
+    }
+    if (statuses[s.id] && statuses[s.id].aptePractiques) placementCounts.senseAssigApte++;
+    else placementCounts.noApte++;
   });
   const placementData = [
     { name: "Confirmats", value: placementCounts.confirmats, color: "#16a34a" },
     { name: "Candidats en procés", value: placementCounts.candidats, color: "#0ea5e9" },
-    { name: "Sense assignar", value: placementCounts.senseAssig, color: "#f97316" },
+    { name: "Sense assignar (apte)", value: placementCounts.senseAssigApte, color: "#f97316" },
+    { name: "Encara no apte", value: placementCounts.noApte, color: "#cbd5e1" },
     { name: "No fa pràctiques", value: placementCounts.noFa, color: "#94a3b8" },
   ].filter((d) => d.value > 0);
 
+  // Candidats per etapa, però NOMÉS els d'aquest grup (una empresa compartida pot tenir
+  // candidats de l'altre grup barrejats, i abans es comptaven tots junts).
   const stageData = ASSIGNMENT_STAGES.map((st) => ({
     name: st.label,
-    candidats: companies.reduce((sum, c) => sum + Object.values(c.assignmentStatus || {}).filter((as) => as.stage === st.id).length, 0),
+    candidats: companies.reduce(
+      (sum, c) => sum + Object.entries(c.assignmentStatus || {}).filter(([sid, as]) => as.stage === st.id && groupStudentIds.has(sid)).length,
+      0
+    ),
   }));
 
   const negotiationData = [
-    { name: "Pendent", value: negociacioPendentContactar, color: "#94a3b8" },
-    { name: "Esperant vacants", value: negociacioEsperant, color: "#38bdf8" },
-    { name: "Vacants confirmades", value: negociacioVacantsConfirmades, color: "#0ea5e9" },
-    { name: "Homologades", value: negociacioHomologada, color: "#16a34a" },
-    { name: "No disponibles", value: negociacioNoDisponible, color: "#ef4444" },
-  ].filter((d) => d.value > 0);
+    { name: "Pendent de contactar", value: negociacioPendentContactar },
+    { name: "Contactada", value: negociacioContactada },
+    { name: "Vacants confirmades", value: negociacioVacantsConfirmades },
+    { name: "Homologada", value: negociacioHomologada },
+    { name: "No disponible", value: negociacioNoDisponible },
+  ];
 
   return (
     <div>
@@ -1713,14 +1736,15 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
       </div>
       <p className="text-xs text-slate-400 mb-6">Les places de pràctiques i adjudicades només compten empreses homologades (compartides entre grups); "adjudicades" són les confirmades amb conveni signat, no els candidats en procés de selecció.</p>
 
-      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Negociacions amb empreses</p>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Negociacions amb empreses (totes, compartides entre grups)</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2">
         <StatTile label="Pendents de contactar" value={negociacioPendentContactar} tone="slate" icon={Mail} />
-        <StatTile label="Esperant vacants" value={negociacioEsperant} tone="sky" icon={Clock} />
+        <StatTile label="Contactades" value={negociacioContactada} tone="sky" icon={Clock} />
         <StatTile label="Vacants confirmades" value={negociacioVacantsConfirmades} tone="sky" icon={CheckCircle2} />
         <StatTile label="Homologades" value={negociacioHomologada} tone="green" icon={Handshake} />
         <StatTile label="No disponibles" value={negociacioNoDisponible} tone={negociacioNoDisponible > 0 ? "red" : "slate"} icon={XCircle} />
       </div>
+      <p className="text-xs text-slate-400 mb-6">Cada fita és independent de les altres — una empresa homologada sol tenir també "contactada" i "vacants confirmades" marcades, ja que hi va passar abans. Per això no sumen el total d'empreses.</p>
       {conveniPendentSignatures > 0 && (
         <div className="mb-8 -mt-4">
           <Badge tone="orange" icon={AlertTriangle}>{conveniPendentSignatures} conveni(s) pendents de completar les signatures</Badge>
@@ -1738,7 +1762,8 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Visió gràfica</p>
       <div className="flex flex-wrap gap-4 mb-8">
         <Card className="p-5">
-          <p className="text-sm font-medium text-slate-700 mb-3">Estat de col·locació de l'alumnat</p>
+          <p className="text-sm font-medium text-slate-700 mb-1">Estat de col·locació de l'alumnat</p>
+          <p className="text-xs text-slate-400 mb-3 max-w-[260px]">Només alumnat del grup {activeGroup}.</p>
           {placementData.length === 0 ? (
             <p className="text-xs text-slate-400">Encara no hi ha alumnat en aquest grup.</p>
           ) : (
@@ -1753,7 +1778,8 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         </Card>
 
         <Card className="p-5">
-          <p className="text-sm font-medium text-slate-700 mb-3">Candidats per etapa del procés</p>
+          <p className="text-sm font-medium text-slate-700 mb-1">Candidats per etapa del procés</p>
+          <p className="text-xs text-slate-400 mb-3 max-w-[260px]">Només candidats del grup {activeGroup} (encara que l'empresa sigui compartida).</p>
           {stageData.every((d) => d.candidats === 0) ? (
             <p className="text-xs text-slate-400 max-w-[260px]">Encara no hi ha cap candidat assignat a cap empresa.</p>
           ) : (
@@ -1768,17 +1794,18 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         </Card>
 
         <Card className="p-5">
-          <p className="text-sm font-medium text-slate-700 mb-3">Empreses per estat de negociació</p>
-          {negotiationData.length === 0 ? (
+          <p className="text-sm font-medium text-slate-700 mb-1">Empreses per fita de negociació</p>
+          <p className="text-xs text-slate-400 mb-3 max-w-[340px]">Fites independents — no sumen el total d'empreses (compta totes, de tots els grups).</p>
+          {companies.length === 0 ? (
             <p className="text-xs text-slate-400 max-w-[260px]">Encara no hi ha cap empresa donada d'alta.</p>
           ) : (
-            <PieChart width={280} height={220}>
-              <Pie data={negotiationData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2}>
-                {negotiationData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-              </Pie>
+            <BarChart width={340} height={220} data={negotiationData} layout="vertical" margin={{ left: 10, right: 20 }}>
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+              <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Legend verticalAlign="bottom" height={48} wrapperStyle={{ fontSize: 11 }} />
-            </PieChart>
+              <Bar dataKey="value" fill="#0ea5e9" radius={[0, 4, 4, 0]} />
+            </BarChart>
           )}
         </Card>
       </div>
