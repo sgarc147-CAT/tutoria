@@ -1670,7 +1670,7 @@ export default function App() {
           />
         )}
         {tab === "companies" && (
-          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} statuses={statuses} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} onLogActivity={logActivity} />
+          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} statuses={statuses} activeGroup={activeGroup} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} onLogActivity={logActivity} />
         )}
         {tab === "candidacies" && (
           <CandidaciesTab
@@ -3878,7 +3878,7 @@ function CompanyInbox({ company, onAddContact }) {
   );
 }
 
-function CompanyCard({ company: c, students, statuses, companies, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
+function CompanyCard({ company: c, students, statuses, companies, activeGroup, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
   const selectedCount = (c.activitats || []).length;
   const status = companyProgressBadge(c);
@@ -4115,6 +4115,7 @@ function CompanyCard({ company: c, students, statuses, companies, expanded, onTo
                 <div className="flex flex-wrap gap-2">
                   {students
                     .filter((s) => !c.assignats.includes(s.id))
+                    .filter((s) => (s.grup || "ADM2") === activeGroup)
                     .filter((s) => !s.noFaPractiques && (statuses[s.id] ? statuses[s.id].aptePractiques : true))
                     .map((s) => {
                     const elsewhereCompany = companies.find((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
@@ -4136,7 +4137,7 @@ function CompanyCard({ company: c, students, statuses, companies, expanded, onTo
                     );
                   })}
                 </div>
-                <p className="text-[11px] text-slate-300 mt-1.5">Només es mostren alumnes aptes per a pràctiques (segons el càlcul automàtic) i que no estiguin marcats com "no fa pràctiques".</p>
+                <p className="text-[11px] text-slate-300 mt-1.5">Només es mostren alumnes del grup {activeGroup} que siguin aptes per a pràctiques (segons el càlcul automàtic) i que no estiguin marcats com "no fa pràctiques". Canvia de grup actiu (barra lateral) per assignar-hi alumnat de l'altre grup.</p>
               </>
             )}
           </div>
@@ -4255,7 +4256,7 @@ function HistorialTab({ log }) {
   );
 }
 
-function CompaniesTab({ companies, setCompanies, students, statuses, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus, onLogActivity }) {
+function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus, onLogActivity }) {
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [draft, setDraft] = useState({ nom: "", regim: "Presencial", places: 1 });
@@ -4354,7 +4355,7 @@ function CompaniesTab({ companies, setCompanies, students, statuses, onAssignCom
       <div className="grid gap-4">
         {companies.map((c) => (
           <CompanyCard
-            key={c.id} company={c} students={students} statuses={statuses} companies={companies}
+            key={c.id} company={c} students={students} statuses={statuses} companies={companies} activeGroup={activeGroup}
             expanded={expandedId === c.id}
             onToggleExpand={() => setExpandedId(expandedId === c.id ? null : c.id)}
             onUpdate={(patch) => updateCompany(c.id, patch)}
