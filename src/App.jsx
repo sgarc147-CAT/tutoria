@@ -274,14 +274,6 @@ const NEGOTIATION_MILESTONES = [
   { id: "vacantsConfirmades", label: "Vacants confirmades" },
   { id: "homologada", label: "Homologada" },
 ];
-// Retorna la fita més avançada assolida (per mostrar-la com a insígnia resumida a la
-// capçalera plegada de la fitxa), o "Pendent de contactar" si encara no n'hi ha cap.
-function companyProgressBadge(c) {
-  if (c.homologada) return { label: "Homologada", tone: "green" };
-  if (c.vacantsConfirmades) return { label: "Vacants confirmades", tone: "sky" };
-  if (c.contactada) return { label: "Contactada", tone: "sky" };
-  return { label: "Pendent de contactar", tone: "slate" };
-}
 
 // Etapes del procés, ja per a un alumne concret assignat a l'empresa: des que se li envia
 // el currículum fins que el conveni queda signat per les quatre parts.
@@ -335,10 +327,10 @@ const FCT_DOCUMENT_ITEMS = [
 const MOCK_COMPANIES = [
   {
     id: "c1", nom: "Gestoria Terradas SL",
-    adreca: "C/ Indústria, 22, Sabadell", telefon: "937001122", email: "info@terradas.example",
+    adreca: "C/ Indústria, 22", cp: "08201", municipi: "Sabadell", pais: "Espanya", telefon: "937001122", email: "info@terradas.example",
     responsableNom: "Marta Puig", responsableCarrec: "Gerent",
     tutorNom: "Elena Terradas", tutorTelefon: "937001123", tutorEmail: "elena@terradas.example",
-    regim: "Presencial", places: 2, assignats: ["s1"],
+    places: 2, assignats: ["s1"],
     activitats: ["1.1", "1.4", "6.1", "6.2"],
     contactada: true, vacantsConfirmades: true, homologada: true, noDisponible: false,
     contacts: [
@@ -348,10 +340,10 @@ const MOCK_COMPANIES = [
   },
   {
     id: "c2", nom: "Vallès Consultors",
-    adreca: "Rambla d'Egara, 10, Terrassa", telefon: "937112233", email: "info@vallesconsultors.example",
+    adreca: "Rambla d'Egara, 10", cp: "08221", municipi: "Terrassa", pais: "Espanya", telefon: "937112233", email: "info@vallesconsultors.example",
     responsableNom: "Jordi Camps", responsableCarrec: "Soci director",
     tutorNom: "Jordi Camps", tutorTelefon: "937112233", tutorEmail: "jcamps@vallesconsultors.example",
-    regim: "Híbrid", places: 1, assignats: ["s3"],
+    places: 1, assignats: ["s3"],
     activitats: ["1.2", "2.1", "2.3"],
     contactada: true, vacantsConfirmades: false, homologada: false, noDisponible: false,
     contacts: [
@@ -360,10 +352,10 @@ const MOCK_COMPANIES = [
   },
   {
     id: "c3", nom: "Ferreteria Industrial Bosch",
-    adreca: "Polígon Can Parellada, s/n, Barberà del Vallès", telefon: "937223344", email: "info@ferreteriabosch.example",
+    adreca: "Polígon Can Parellada, s/n", cp: "08210", municipi: "Barberà del Vallès", pais: "Espanya", telefon: "937223344", email: "info@ferreteriabosch.example",
     responsableNom: "Anna Bosch", responsableCarrec: "Propietària",
     tutorNom: "Anna Bosch", tutorTelefon: "937223344", tutorEmail: "abosch@ferreteriabosch.example",
-    regim: "Presencial", places: 3, assignats: [],
+    places: 3, assignats: [],
     activitats: [],
     contactada: false, vacantsConfirmades: false, homologada: false, noDisponible: false,
     contacts: [],
@@ -519,6 +511,16 @@ function findStudentByFullName(students, fullName) {
   const target = normalizeNameForMatch(fullName);
   if (!target) return -1;
   return students.findIndex((s) => normalizeNameForMatch(`${s.nom} ${s.cognoms}`) === target);
+}
+
+// Ordre alfabètic per Cognom1 Cognom2, Nom — el que s'espera de qualsevol llistat
+// d'alumnat, en lloc de l'ordre en què es van donar d'alta.
+function sortByCognomsNom(a, b) {
+  return normalize(`${a.cognoms || ""} ${a.nom || ""}`).localeCompare(normalize(`${b.cognoms || ""} ${b.nom || ""}`), "ca");
+}
+// Ordre alfabètic pel nom de l'empresa.
+function sortByNom(a, b) {
+  return normalize(a.nom || "").localeCompare(normalize(b.nom || ""), "ca");
 }
 
 // Excel guarda les dates com un número de sèrie (dies des del 30/12/1899), no com a text.
@@ -1118,14 +1120,25 @@ export default function App() {
   // puguin veure qui ha fet què i desfer confusions. Es limita a les últimes entrades
   // perquè el fitxer no creixi sense parar.
   const [activityLog, setActivityLog] = useState(initial.activityLog || []);
-  function logActivity(action, details) {
+  function logActivity(action, details, undo) {
     const entry = {
       id: "log" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       timestamp: new Date().toISOString(),
       user: (typeof window !== "undefined" && window.__CURRENT_USER_EMAIL__) || "algú",
-      action, details,
+      action, details, undo: undo || null,
     };
     setActivityLog((prev) => [...prev, entry].slice(-ACTIVITY_LOG_CAP));
+  }
+
+  // Desfà una entrada de l'historial, si és d'un tipus reversible (assignacions, canvis
+  // d'etapa, fites de negociació). Les eliminacions definitives no es poden desfer des
+  // d'aquí — cal recórrer a l'historial de versions del fitxer al Drive.
+  function undoActivity(entry) {
+    const u = entry.undo;
+    if (!u) return;
+    if (u.type === "assignment") assignCompanyToStudent(u.studentId, u.previousCompanyId);
+    else if (u.type === "stage") updateAssignmentStatus(u.companyId, u.studentId, { stage: u.previousStage });
+    else if (u.type === "milestone") setCompanies((prev) => prev.map((c) => (c.id === u.companyId ? { ...c, [u.key]: u.previousValue } : c)));
   }
 
   // Manté un registre de l'últim estat sincronitzat amb el Drive, per poder detectar quins
@@ -1394,20 +1407,25 @@ export default function App() {
       }
       return { ...c, assignats: withoutStudent };
     }));
+    const undoInfo = { type: "assignment", studentId, previousCompanyId: oldCompany ? oldCompany.id : null };
     if (newCompany && oldCompany && oldCompany.id !== newCompany.id) {
-      logActivity("Reassignació", `${studentName}: ${oldCompany.nom} → ${newCompany.nom}`);
+      logActivity("Reassignació", `${studentName}: ${oldCompany.nom} → ${newCompany.nom}`, undoInfo);
     } else if (newCompany && !oldCompany) {
-      logActivity("Assignació", `${studentName} → ${newCompany.nom}`);
+      logActivity("Assignació", `${studentName} → ${newCompany.nom}`, undoInfo);
     } else if (!newCompany && oldCompany) {
-      logActivity("Desassignació", `${studentName} (era a ${oldCompany.nom})`);
+      logActivity("Desassignació", `${studentName} (era a ${oldCompany.nom})`, undoInfo);
     }
   }
   function updateAssignmentStatus(companyId, studentId, patch) {
     const company = companies.find((c) => c.id === companyId);
     const student = students.find((s) => s.id === studentId);
     if (patch.stage && company && student) {
+      const previousStage = ((company.assignmentStatus || {})[studentId] || {}).stage || "cv_enviat";
       const stageLabel = (ASSIGNMENT_STAGES.find((s) => s.id === patch.stage) || {}).label || patch.stage;
-      logActivity("Canvi d'etapa", `${student.nom} ${student.cognoms} a ${company.nom}: ${stageLabel}`);
+      logActivity(
+        "Canvi d'etapa", `${student.nom} ${student.cognoms} a ${company.nom}: ${stageLabel}`,
+        { type: "stage", companyId, studentId, previousStage }
+      );
     }
     setCompanies((prev) => prev.map((c) => {
       if (c.id !== companyId) return c;
@@ -1681,7 +1699,7 @@ export default function App() {
             onToggleAssign={(companyId, studentId) => assignCompanyToStudent(studentId, null)}
           />
         )}
-        {tab === "historial" && <HistorialTab log={activityLog} />}
+        {tab === "historial" && <HistorialTab log={activityLog} onUndo={undoActivity} />}
         {tab === "trash" && (
           <TrashTab
             students={students.filter((s) => s.trashedAt)}
@@ -1755,6 +1773,12 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     const entries = Object.entries(c.assignmentStatus || {}).filter(([sid]) => groupStudentIds.has(sid));
     return sum + entries.filter(([, as]) => as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean)).length;
   }, 0);
+  // Contactes de negociació amb una data de seguiment marcada i ja vençuda (totes les
+  // empreses, ja que la negociació és compartida entre grups).
+  const negociacioSeguimentsVencuts = companies.reduce(
+    (sum, c) => sum + (c.contacts || []).filter((ct) => ct.propseguiment && ct.propseguiment <= avuiIso).length,
+    0
+  );
 
   // Dades pels gràfics: estat de col·locació de cada alumne d'aquest grup. Distingeix
   // "sense assignar" (apte, però encara sense gestionar) de "encara no apte" (el càlcul
@@ -1827,9 +1851,10 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         <StatTile label="No disponibles" value={negociacioNoDisponible} tone={negociacioNoDisponible > 0 ? "red" : "slate"} icon={XCircle} />
       </div>
       <p className="text-xs text-slate-400 mb-6">Cada fita és independent de les altres — una empresa homologada sol tenir també "contactada" i "vacants confirmades" marcades, ja que hi va passar abans. Per això no sumen el total d'empreses.</p>
-      {conveniPendentSignatures > 0 && (
-        <div className="mb-8 -mt-4">
-          <Badge tone="orange" icon={AlertTriangle}>{conveniPendentSignatures} conveni(s) pendents de completar les signatures</Badge>
+      {(conveniPendentSignatures > 0 || negociacioSeguimentsVencuts > 0) && (
+        <div className="mb-8 -mt-4 flex flex-wrap gap-2">
+          {conveniPendentSignatures > 0 && <Badge tone="orange" icon={AlertTriangle}>{conveniPendentSignatures} conveni(s) pendents de completar les signatures</Badge>}
+          {negociacioSeguimentsVencuts > 0 && <Badge tone="orange" icon={CalendarClock}>{negociacioSeguimentsVencuts} seguiment(s) de negociació vençuts</Badge>}
         </div>
       )}
 
@@ -2558,7 +2583,7 @@ function StudentsList({ activeGroup, students, statuses, scheduleStatuses, onSel
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ nom: "", cognoms: "", tipusDoc: "DNI", dni: "" });
-  const filtered = students.filter((s) => normalize(`${s.nom} ${s.cognoms}`).includes(normalize(query)));
+  const filtered = students.filter((s) => normalize(`${s.nom} ${s.cognoms}`).includes(normalize(query))).sort(sortByCognomsNom);
 
   function handleTrash(e, s) {
     e.stopPropagation();
@@ -3548,7 +3573,7 @@ function activeCandidatesList(students, companies) {
       list.push({ student, company: c, stage: as.stage });
     });
   });
-  return list;
+  return list.sort((a, b) => sortByCognomsNom(a.student, b.student));
 }
 
 function ActivityPreferencesCard({ student, assignedCompany, onUpdateStudent }) {
@@ -3608,7 +3633,7 @@ function ActivityPreferencesCard({ student, assignedCompany, onUpdateStudent }) 
 function PracticumSection({ student, schedule, scheduleStatus, classGrid, companies, assignedCompanyId, onAssignCompany, onUpdateSchedule, onAddPeriod, onRemovePeriod, onUpdatePeriod, onToggleTick, onUpdateNotaEmpresa, onUpdateStudent }) {
   const assignedCompany = companies.find((c) => c.id === assignedCompanyId);
   const studentAddress = buildAddress(student.adreca, student.cp, student.municipi, student.pais);
-  const companyAddress = assignedCompany ? buildAddress(assignedCompany.adreca) : "";
+  const companyAddress = assignedCompany ? buildAddress(assignedCompany.adreca, assignedCompany.cp, assignedCompany.municipi, assignedCompany.pais) : "";
 
   return (
     <div className="space-y-5">
@@ -3881,18 +3906,18 @@ function CompanyInbox({ company, onAddContact }) {
 function CompanyCard({ company: c, students, statuses, companies, activeGroup, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
   const selectedCount = (c.activitats || []).length;
-  const status = companyProgressBadge(c);
   const contacts = [...(c.contacts || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
-  const [newContact, setNewContact] = useState({ data: "", tipus: "Correu enviat", notes: "" });
+  const [newContact, setNewContact] = useState({ data: "", tipus: "Correu enviat", notes: "", propseguiment: "" });
   // Les places només es "gasten" quan un candidat arriba a conveni signat — mentre és
   // un procés de selecció, es poden tenir més candidats assignats que places reals.
   const confirmedCount = c.assignats.filter((id) => ((c.assignmentStatus || {})[id] || {}).stage === "signat").length;
   const candidatesInProcess = c.assignats.length - confirmedCount;
+  const candidatesTotal = c.assignats.length;
 
   function submitContact() {
     if (!newContact.data) return;
     onAddContact({ id: "ct" + Math.random().toString(36).slice(2, 8), ...newContact });
-    setNewContact({ data: "", tipus: "Correu enviat", notes: "" });
+    setNewContact({ data: "", tipus: "Correu enviat", notes: "", propseguiment: "" });
   }
 
   return (
@@ -3902,25 +3927,26 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
           {expanded ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
           <div>
             <p className="text-sm font-medium text-slate-800 flex items-center gap-2"><BriefcaseBusiness size={15} className="text-sky-500" /> {c.nom}</p>
-            <p className="text-xs text-slate-400 mt-0.5">Tutor: {c.tutorNom || "—"} · {c.adreca || "Sense adreça"}</p>
+            <p className="text-xs text-slate-400 mt-0.5">Tutor: {c.tutorNom || "—"} · {buildAddress(c.adreca, c.cp, c.municipi, c.pais) || "Sense adreça"}</p>
           </div>
         </button>
-        <div className="flex items-center gap-2">
-          <Badge tone={status.tone}>{status.label}</Badge>
-          {c.noDisponible && <Badge tone="red">No disponible</Badge>}
-          <Badge tone="sky">{c.regim}</Badge>
-          <Badge
-            tone={confirmedCount > c.places ? "red" : confirmedCount >= c.places ? "orange" : "slate"}
-            title="Compta alumnat de tots els grups — l'empresa es comparteix entre ADM2 i ADM4."
-          >
-            {confirmedCount}/{c.places} confirmats
-          </Badge>
-          {candidatesInProcess > 0 && (
-            <Badge tone="sky" title="Compta alumnat de tots els grups — l'empresa es comparteix entre ADM2 i ADM4.">
-              {candidatesInProcess} candidat(s) en procés
-            </Badge>
+        <div className="flex items-center gap-2 flex-wrap">
+          {c.noDisponible ? (
+            <Badge tone="red">No disponible</Badge>
+          ) : (
+            <>
+              {c.homologada && <Badge tone="green">Homologada</Badge>}
+              {c.contactada && <Badge tone="sky">Contactada</Badge>}
+              {c.vacantsConfirmades && <Badge tone="sky">Vacants confirmades</Badge>}
+              <Badge tone="slate">{c.places} places</Badge>
+              <Badge
+                tone={candidatesTotal === 0 ? "slate" : "sky"}
+                title="Compta alumnat de tots els grups — l'empresa es comparteix entre ADM2 i ADM4."
+              >
+                {candidatesTotal} candidatures{confirmedCount > 0 ? ` (${confirmedCount} adjudicades)` : ""}
+              </Badge>
+            </>
           )}
-          <Badge tone="slate">{selectedCount}/{totalActivitats} activitats</Badge>
           <button
             onClick={() => { if (window.confirm(`Enviar "${c.nom}" a la paperera? La podràs restaurar des de la pestanya "Paperera".`)) onRemove(); }}
             className="text-slate-300 hover:text-red-500" title="Envia a la paperera"
@@ -3955,30 +3981,32 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
               }`}
             >
               <input
-                type="checkbox" checked={!!c.noDisponible} onChange={() => onUpdate({ noDisponible: !c.noDisponible })}
+                type="checkbox" checked={!!c.noDisponible}
+                onChange={() => onUpdate(c.noDisponible ? { noDisponible: false } : { noDisponible: true, places: 0 })}
                 className="w-3.5 h-3.5 rounded border-red-300 focus:ring-red-300"
               />
               No disponible
             </label>
+            {c.noDisponible && <p className="text-xs text-slate-400 mt-1.5">Les places s'han posat a 0 automàticament — una empresa no disponible no ofereix cap plaça real.</p>}
           </div>
 
           <div>
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Dades de l'empresa</p>
+            <p className="text-xs text-slate-400 mb-2">Mateix format que l'adreça de l'alumnat (carrer/plaça i número, codi postal, municipi) — cal perquè es puguin calcular els minuts de trajecte a peu.</p>
             <div className="grid sm:grid-cols-3 gap-3">
               <Field label="Adreça" value={c.adreca} onChange={(v) => onUpdate({ adreca: v })} />
+              <Field label="Codi postal" value={c.cp} onChange={(v) => onUpdate({ cp: v })} />
+              <Field label="Municipi" value={c.municipi} onChange={(v) => onUpdate({ municipi: v })} />
+              <Field label="País" value={c.pais} onChange={(v) => onUpdate({ pais: v })} />
               <Field label="Telèfon" value={c.telefon} onChange={(v) => onUpdate({ telefon: v })} />
               <Field label="Correu electrònic" value={c.email} onChange={(v) => onUpdate({ email: v })} />
               <label className="block">
-                <span className="text-xs text-slate-400">Règim</span>
-                <select value={c.regim} onChange={(e) => onUpdate({ regim: e.target.value })}
-                  className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-300">
-                  <option>Presencial</option><option>Híbrid</option><option>Remot</option>
-                </select>
-              </label>
-              <label className="block">
                 <span className="text-xs text-slate-400">Places</span>
-                <input type="number" min="0" value={c.places} onChange={(e) => onUpdate({ places: Number(e.target.value) })}
-                  className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
+                <input
+                  type="number" min="0" value={c.places} disabled={!!c.noDisponible}
+                  onChange={(e) => onUpdate({ places: Number(e.target.value) })}
+                  className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300 disabled:bg-slate-50 disabled:text-slate-400"
+                />
               </label>
               <label className="block sm:col-span-3">
                 <span className="text-xs text-slate-400">Horari proposat / observacions</span>
@@ -4011,7 +4039,7 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
           <div>
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2 flex items-center gap-1.5"><Mail size={13} /> Seguiment de la negociació</p>
             <Card className="p-4 mb-3">
-              <div className="grid sm:grid-cols-3 gap-3 mb-3">
+              <div className="grid sm:grid-cols-4 gap-3 mb-3">
                 <label className="block">
                   <span className="text-xs text-slate-400">Data</span>
                   <input type="date" value={newContact.data} onChange={(e) => setNewContact({ ...newContact, data: e.target.value })}
@@ -4029,6 +4057,11 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
                   </select>
                 </label>
                 <Field label="Notes" value={newContact.notes} onChange={(v) => setNewContact({ ...newContact, notes: v })} />
+                <label className="block">
+                  <span className="text-xs text-slate-400">Cal fer seguiment el (opcional)</span>
+                  <input type="date" value={newContact.propseguiment || ""} onChange={(e) => setNewContact({ ...newContact, propseguiment: e.target.value })}
+                    className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
+                </label>
               </div>
               <button onClick={submitContact} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 text-white text-xs font-medium hover:bg-sky-600">
                 <Plus size={13} /> Afegeix contacte
@@ -4038,18 +4071,26 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
               <p className="text-xs text-slate-400">Encara no hi ha cap contacte registrat.</p>
             ) : (
               <div className="space-y-2">
-                {contacts.map((ct) => (
-                  <div key={ct.id} className="flex items-start justify-between gap-2 px-3 py-2 rounded-lg bg-slate-50 border border-slate-100">
-                    <div className="flex items-start gap-2">
-                      {ct.tipus === "Trucada" ? <PhoneCall size={13} className="text-sky-500 mt-0.5" /> : <Mail size={13} className="text-sky-500 mt-0.5" />}
-                      <div>
-                        <p className="text-xs font-medium text-slate-700">{ct.tipus} <span className="text-slate-400 font-normal">— {ct.data}</span></p>
-                        {ct.notes && <p className="text-xs text-slate-500 mt-0.5">{ct.notes}</p>}
+                {contacts.map((ct) => {
+                  const overdue = ct.propseguiment && ct.propseguiment <= toIsoDate(new Date());
+                  return (
+                    <div key={ct.id} className={`flex items-start justify-between gap-2 px-3 py-2 rounded-lg border ${overdue ? "bg-orange-50 border-orange-200" : "bg-slate-50 border-slate-100"}`}>
+                      <div className="flex items-start gap-2">
+                        {ct.tipus === "Trucada" ? <PhoneCall size={13} className="text-sky-500 mt-0.5" /> : <Mail size={13} className="text-sky-500 mt-0.5" />}
+                        <div>
+                          <p className="text-xs font-medium text-slate-700">{ct.tipus} <span className="text-slate-400 font-normal">— {ct.data}</span></p>
+                          {ct.notes && <p className="text-xs text-slate-500 mt-0.5">{ct.notes}</p>}
+                          {ct.propseguiment && (
+                            <p className={`text-xs mt-1 flex items-center gap-1 ${overdue ? "text-orange-600 font-medium" : "text-slate-400"}`}>
+                              <CalendarClock size={12} /> {overdue ? "Seguiment vençut" : "Fer seguiment"} el {ct.propseguiment}
+                            </p>
+                          )}
+                        </div>
                       </div>
+                      <button onClick={() => onDeleteContact(ct.id)} className="text-slate-300 hover:text-red-500 shrink-0"><Trash2 size={12} /></button>
                     </div>
-                    <button onClick={() => onDeleteContact(ct.id)} className="text-slate-300 hover:text-red-500 shrink-0"><Trash2 size={12} /></button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -4058,7 +4099,7 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Alumnat assignat</p>
             {students.filter((s) => c.assignats.includes(s.id)).length > 0 && (
               <div className="space-y-2 mb-3">
-                {students.filter((s) => c.assignats.includes(s.id)).map((s) => {
+                {students.filter((s) => c.assignats.includes(s.id)).sort(sortByCognomsNom).map((s) => {
                   const as = (c.assignmentStatus && c.assignmentStatus[s.id]) || defaultAssignmentStatus();
                   const allSigned = Object.values(as.signatures || {}).every(Boolean);
                   return (
@@ -4117,6 +4158,7 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
                     .filter((s) => !c.assignats.includes(s.id))
                     .filter((s) => (s.grup || "ADM2") === activeGroup)
                     .filter((s) => !s.noFaPractiques && (statuses[s.id] ? statuses[s.id].aptePractiques : true))
+                    .sort(sortByCognomsNom)
                     .map((s) => {
                     const elsewhereCompany = companies.find((oc) => oc.id !== c.id && oc.assignats.includes(s.id));
                     const elsewhere = !!elsewhereCompany;
@@ -4227,13 +4269,22 @@ function CandidaciesTab({ activeGroup, students, companies, onSelectStudent, onS
   );
 }
 
-function HistorialTab({ log }) {
+function HistorialTab({ log, onUndo }) {
   const sorted = [...log].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const [undoneIds, setUndoneIds] = useState({});
+
+  function handleUndo(entry) {
+    if (!window.confirm(`Desfer "${entry.action}: ${entry.details}"?`)) return;
+    onUndo(entry);
+    setUndoneIds((prev) => ({ ...prev, [entry.id]: true }));
+  }
+
   return (
     <div>
       <h1 className="text-xl font-semibold text-slate-800 mb-1">Historial d'activitat</h1>
       <p className="text-sm text-slate-500 mb-6">
         Registre dels canvis més sensibles (assignacions, estats de negociació, eliminacions...) fets per qualsevol de les persones amb accés — per poder reconstruir què ha passat si mai hi ha un dubte. Es conserven les últimes {ACTIVITY_LOG_CAP} entrades.
+        Les assignacions, canvis d'etapa i fites de negociació es poden desfer amb un clic; les eliminacions definitives no — per a aquestes, cal l'historial de versions del fitxer al Drive.
       </p>
       {sorted.length === 0 ? (
         <Card className="p-5"><p className="text-sm text-slate-400">Encara no hi ha cap activitat registrada.</p></Card>
@@ -4246,7 +4297,13 @@ function HistorialTab({ log }) {
                   <span className="text-xs font-medium text-slate-700">{entry.action}</span>
                   <span className="text-xs text-slate-500 ml-2">{entry.details}</span>
                 </div>
-                <span className="text-[11px] text-slate-400 whitespace-nowrap">{new Date(entry.timestamp).toLocaleString("ca")} · {entry.user}</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] text-slate-400 whitespace-nowrap">{new Date(entry.timestamp).toLocaleString("ca")} · {entry.user}</span>
+                  {entry.undo && !undoneIds[entry.id] && (
+                    <button onClick={() => handleUndo(entry)} className="text-xs text-sky-600 hover:underline whitespace-nowrap">Desfés</button>
+                  )}
+                  {undoneIds[entry.id] && <Badge tone="slate">Desfet</Badge>}
+                </div>
               </div>
             </Card>
           ))}
@@ -4259,21 +4316,22 @@ function HistorialTab({ log }) {
 function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus, onLogActivity }) {
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
-  const [draft, setDraft] = useState({ nom: "", regim: "Presencial", places: 1 });
+  const [draft, setDraft] = useState({ nom: "", places: 1 });
+  const [query, setQuery] = useState("");
 
   function addCompany() {
     if (!draft.nom) return;
     const id = "c" + Math.random().toString(36).slice(2, 9);
     setCompanies((prev) => [...prev, {
-      id, nom: draft.nom, regim: draft.regim, places: Number(draft.places), assignats: [],
-      adreca: "", telefon: "", email: "",
+      id, nom: draft.nom, places: Number(draft.places), assignats: [],
+      adreca: "", cp: "", municipi: "", pais: "", telefon: "", email: "",
       responsableNom: "", responsableCarrec: "",
       tutorNom: "", tutorTelefon: "", tutorEmail: "",
       activitats: [],
       contactada: false, vacantsConfirmades: false, homologada: false, noDisponible: false,
       contacts: [],
     }]);
-    setDraft({ nom: "", regim: "Presencial", places: 1 });
+    setDraft({ nom: "", places: 1 });
     setAdding(false);
     setExpandedId(id);
   }
@@ -4284,7 +4342,10 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
     const milestoneKey = Object.keys(patch).find((k) => k in MILESTONE_LABELS);
     if (company && milestoneKey) {
       const turnedOn = patch[milestoneKey];
-      onLogActivity(turnedOn ? "Fita marcada" : "Fita desmarcada", `${company.nom}: ${MILESTONE_LABELS[milestoneKey]}`);
+      onLogActivity(
+        turnedOn ? "Fita marcada" : "Fita desmarcada", `${company.nom}: ${MILESTONE_LABELS[milestoneKey]}`,
+        { type: "milestone", companyId: id, key: milestoneKey, previousValue: !turnedOn }
+      );
     }
     setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   }
@@ -4326,19 +4387,20 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
         </button>
       </div>
       <p className="text-sm text-slate-500 mb-1">Dades de contacte, responsable, tutor de pràctiques, alumnat assignat i pla d'activitats de cada empresa col·laboradora.</p>
-      <p className="text-xs text-slate-400 mb-6">Les empreses es comparteixen entre grups — l'alumnat i els comptadors que veus aquí poden incloure candidats d'ADM2 i ADM4 alhora, a diferència del Dashboard, que només mostra el grup actiu.</p>
+      <p className="text-xs text-slate-400 mb-4">Les empreses es comparteixen entre grups — l'alumnat i els comptadors que veus aquí poden incloure candidats d'ADM2 i ADM4 alhora, a diferència del Dashboard, que només mostra el grup actiu.</p>
+
+      <div className="relative mb-6 max-w-sm">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" size={16} />
+        <input
+          value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Cerca una empresa..."
+          className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-sky-300"
+        />
+      </div>
 
       {adding && (
         <Card className="p-5 mb-5">
           <div className="grid sm:grid-cols-3 gap-3 mb-3">
             <Field label="Nom de l'empresa" value={draft.nom} onChange={(v) => setDraft({ ...draft, nom: v })} />
-            <label className="block">
-              <span className="text-xs text-slate-400">Règim</span>
-              <select value={draft.regim} onChange={(e) => setDraft({ ...draft, regim: e.target.value })}
-                className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-sky-300">
-                <option>Presencial</option><option>Híbrid</option><option>Remot</option>
-              </select>
-            </label>
             <label className="block">
               <span className="text-xs text-slate-400">Places</span>
               <input type="number" min="0" value={draft.places} onChange={(e) => setDraft({ ...draft, places: e.target.value })}
@@ -4352,8 +4414,11 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
         </Card>
       )}
 
-      <div className="grid gap-4">
-        {companies.map((c) => (
+      {(() => {
+        const matching = companies.filter((c) => normalize(c.nom).includes(normalize(query))).sort(sortByNom);
+        const disponibles = matching.filter((c) => !c.noDisponible);
+        const noDisponibles = matching.filter((c) => c.noDisponible);
+        const renderCard = (c) => (
           <CompanyCard
             key={c.id} company={c} students={students} statuses={statuses} companies={companies} activeGroup={activeGroup}
             expanded={expandedId === c.id}
@@ -4366,8 +4431,29 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
             onDeleteContact={(contactId) => deleteCompanyContact(c.id, contactId)}
             onUpdateAssignmentStatus={(studentId, patch) => onUpdateAssignmentStatus(c.id, studentId, patch)}
           />
-        ))}
-      </div>
+        );
+        return (
+          <>
+            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Disponibles ({disponibles.length})</p>
+            <div className="grid gap-4 mb-8">
+              {disponibles.length === 0 ? (
+                <p className="text-sm text-slate-400">Cap empresa disponible {query ? "amb aquesta cerca" : "encara"}.</p>
+              ) : (
+                disponibles.map(renderCard)
+              )}
+            </div>
+
+            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">No disponibles ({noDisponibles.length})</p>
+            <div className="grid gap-4">
+              {noDisponibles.length === 0 ? (
+                <p className="text-sm text-slate-400">Cap empresa marcada com a no disponible.</p>
+              ) : (
+                noDisponibles.map(renderCard)
+              )}
+            </div>
+          </>
+        );
+      })()}
     </div>
   );
 }
