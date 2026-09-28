@@ -523,6 +523,55 @@ function sortByNom(a, b) {
   return normalize(a.nom || "").localeCompare(normalize(b.nom || ""), "ca");
 }
 
+// Categoria de col·locació d'un alumne — la mateixa lògica exacta que fa servir el gràfic
+// del Dashboard, perquè els números del Dashboard i els llistats filtrats sempre quadrin.
+function placementKey(s, companies, statuses) {
+  if (s.noFaPractiques) return "noFa";
+  const c = companies.find((co) => co.assignats.includes(s.id));
+  if (c) return (((c.assignmentStatus || {})[s.id] || {}).stage === "signat") ? "confirmat" : "candidat";
+  return statuses[s.id] && statuses[s.id].aptePractiques ? "senseApte" : "noApte";
+}
+function turns18Soon(s) {
+  const age = calcAge(s.dataNaixement);
+  if (age !== 17) return false;
+  const now = new Date();
+  const d = new Date(s.dataNaixement);
+  const proper = new Date(d);
+  proper.setFullYear(now.getFullYear() + (now.getMonth() > d.getMonth() || (now.getMonth() === d.getMonth() && now.getDate() > d.getDate()) ? 1 : 0));
+  const en30 = new Date(); en30.setDate(en30.getDate() + 30);
+  const properIso = toIsoDate(proper);
+  return properIso >= toIsoDate(now) && properIso <= toIsoDate(en30);
+}
+// Filtres disponibles a la llista d'alumnat (ctx = { companies, statuses }).
+const STUDENT_FILTERS = [
+  { id: "all", group: "col", label: "Tots", test: () => true },
+  { id: "fent", group: "col", label: "Fent pràctiques", test: (s, x) => ["confirmat", "candidat"].includes(placementKey(s, x.companies, x.statuses)) },
+  { id: "confirmat", group: "col", label: "Confirmats", test: (s, x) => placementKey(s, x.companies, x.statuses) === "confirmat" },
+  { id: "candidat", group: "col", label: "Candidats en procés", test: (s, x) => placementKey(s, x.companies, x.statuses) === "candidat" },
+  { id: "sense", group: "col", label: "Sense assignar", test: (s, x) => ["senseApte", "noApte"].includes(placementKey(s, x.companies, x.statuses)) },
+  { id: "senseApte", group: "col", label: "Sense assignar (apte)", test: (s, x) => placementKey(s, x.companies, x.statuses) === "senseApte" },
+  { id: "noApte", group: "col", label: "Encara no apte", test: (s, x) => placementKey(s, x.companies, x.statuses) === "noApte" },
+  { id: "noFa", group: "col", label: "No fa pràctiques", test: (s, x) => placementKey(s, x.companies, x.statuses) === "noFa" },
+  { id: "apte", group: "altres", label: "Aptes per a pràctiques", test: (s, x) => !!(x.statuses[s.id] && x.statuses[s.id].aptePractiques) },
+  { id: "bloquejats", group: "altres", label: "Amb bloquejos", test: (s, x) => !!(x.statuses[s.id] && x.statuses[s.id].blocks.some((b) => b.target !== "Accés a Pràctiques (FCT)")) },
+  { id: "incidencies", group: "altres", label: "Incidència oberta", test: (s) => (s.incidents || []).some((n) => !n.resolt) },
+  { id: "revisions", group: "altres", label: "Revisió vençuda", test: (s) => (s.interviews || []).some((iv) => iv.properaRevisio && iv.properaRevisio <= toIsoDate(new Date())) },
+  { id: "senseEntrevista", group: "altres", label: "Sense cap entrevista", test: (s) => (s.interviews || []).length === 0 },
+  { id: "fan18", group: "altres", label: "Fan 18 anys aviat", test: (s) => turns18Soon(s) },
+];
+// Filtres disponibles a la llista d'empreses.
+const COMPANY_FILTERS = [
+  { id: "all", group: "neg", label: "Totes", test: () => true },
+  { id: "pendent", group: "neg", label: "Pendents de contactar", test: (c) => !c.contactada },
+  { id: "contactada", group: "neg", label: "Contactades", test: (c) => !!c.contactada },
+  { id: "vacants", group: "neg", label: "Vacants confirmades", test: (c) => !!c.vacantsConfirmades },
+  { id: "homologada", group: "neg", label: "Homologades", test: (c) => !!c.homologada },
+  { id: "noDisponible", group: "neg", label: "No disponibles", test: (c) => !!c.noDisponible },
+  { id: "ambCandidatures", group: "cand", label: "Amb candidatures", test: (c) => c.assignats.length > 0 },
+  { id: "senseCandidatures", group: "cand", label: "Sense candidatures", test: (c) => c.assignats.length === 0 && !c.noDisponible },
+  { id: "seguimentVencut", group: "cand", label: "Seguiment vençut", test: (c) => (c.contacts || []).some((ct) => ct.propseguiment && ct.propseguiment <= toIsoDate(new Date())) },
+];
+
 // Excel guarda les dates com un número de sèrie (dies des del 30/12/1899), no com a text.
 // Aquesta funció ho detecta i ho converteix sempre a "AAAA-MM-DD", tant si arriba com a
 // número, com a objecte Date, com a text ja normal.
@@ -759,20 +808,44 @@ function Card({ children, className = "" }) {
   return <div className={`bg-white shadow-sm border border-slate-200 rounded-xl ${className}`}>{children}</div>;
 }
 
-function StatTile({ label, value, tone, icon: Icon }) {
+function StatTile({ label, value, tone, icon: Icon, onClick }) {
   const tones = {
     green: "text-green-600", red: "text-red-600", orange: "text-orange-500", sky: "text-sky-600", slate: "text-slate-500",
   };
-  return (
-    <Card className="p-5 flex items-center gap-4">
+  const inner = (
+    <Card className={`p-5 flex items-center gap-4 ${onClick ? "hover:border-sky-300 hover:shadow transition-all cursor-pointer" : ""}`}>
       <div className={`w-11 h-11 rounded-lg flex items-center justify-center bg-slate-50 ${tones[tone]}`}>
         <Icon size={20} />
       </div>
       <div>
         <p className="text-2xl font-semibold text-slate-800 leading-none">{value}</p>
-        <p className="text-sm text-slate-500 mt-1">{label}</p>
+        <p className="text-sm text-slate-500 mt-1">{label}{onClick && <span className="text-sky-400"> ›</span>}</p>
       </div>
     </Card>
+  );
+  return onClick ? <button type="button" onClick={onClick} className="block w-full text-left">{inner}</button> : inner;
+}
+
+// Fila de "xips" de filtre amb el recompte de cada un — es fa servir a Alumnat i Empreses.
+function FilterChips({ groups, counts, value, onChange }) {
+  return (
+    <div className="space-y-2 mb-5">
+      {groups.map((g) => (
+        <div key={g.title} className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] uppercase tracking-wide text-slate-400 mr-1 w-24 shrink-0">{g.title}</span>
+          {g.filters.map((f) => (
+            <button
+              key={f.id} onClick={() => onChange(f.id)}
+              className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                value === f.id ? "bg-sky-500 text-white border-sky-500" : "bg-white text-slate-500 border-slate-200 hover:border-sky-300"
+              }`}
+            >
+              {f.label} <span className={value === f.id ? "opacity-80" : "opacity-50"}>{counts[f.id]}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1106,6 +1179,9 @@ export default function App() {
     return s;
   });
   const [selectedStudentId, setSelectedStudentId] = useState(null);
+  // Filtres actius de les llistes d'Alumnat i d'Empreses (el Dashboard els activa amb un clic).
+  const [studentFilter, setStudentFilter] = useState("all");
+  const [companyFilter, setCompanyFilter] = useState("all");
   const [holidays, setHolidays] = useState(initial.holidays || []); // dates "AAAA-MM-DD" marcades com a festiu/vacances
   // Formulari de preferències d'activitats (Google Forms): { formId, responderUri,
   // nameQuestionId, categoryQuestionIds }. Un de sol per aplicació, no cal fer-ne un per grup.
@@ -1635,6 +1711,8 @@ export default function App() {
             activeGroup={activeGroup} students={groupStudents} statuses={statuses} scheduleStatuses={scheduleStatuses} companies={activeCompanies}
             onSelectStudent={(id) => { setTab("students"); setSelectedStudentId(id); }}
             onOpenCandidacies={() => setTab("candidacies")}
+            onOpenStudents={(f) => { setStudentFilter(f); setSelectedStudentId(null); setTab("students"); }}
+            onOpenCompanies={(f) => { setCompanyFilter(f); setTab("companies"); }}
           />
         )}
         {tab === "import" && (
@@ -1654,7 +1732,7 @@ export default function App() {
         )}
         {tab === "calendari" && <HolidayCalendarTab holidays={holidays} onToggle={toggleHoliday} />}
         {tab === "students" && !selectedStudent && (
-          <StudentsList activeGroup={activeGroup} students={groupStudents} statuses={statuses} scheduleStatuses={scheduleStatuses} onSelect={setSelectedStudentId} onTrash={trashStudent} onAdd={(basic) => setSelectedStudentId(addManualStudent(basic))} />
+          <StudentsList activeGroup={activeGroup} students={groupStudents} companies={activeCompanies} statuses={statuses} scheduleStatuses={scheduleStatuses} filter={studentFilter} onFilterChange={setStudentFilter} onSelect={setSelectedStudentId} onTrash={trashStudent} onAdd={(basic) => setSelectedStudentId(addManualStudent(basic))} />
         )}
         {tab === "students" && selectedStudent && (
           <StudentDetail
@@ -1688,7 +1766,7 @@ export default function App() {
           />
         )}
         {tab === "companies" && (
-          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} statuses={statuses} activeGroup={activeGroup} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} onLogActivity={logActivity} />
+          <CompaniesTab companies={activeCompanies} setCompanies={setCompanies} students={activeStudents} statuses={statuses} activeGroup={activeGroup} filter={companyFilter} onFilterChange={setCompanyFilter} onAssignCompany={assignCompanyToStudent} onTrashCompany={trashCompany} onUpdateAssignmentStatus={updateAssignmentStatus} onLogActivity={logActivity} />
         )}
         {tab === "candidacies" && (
           <CandidaciesTab
@@ -1719,7 +1797,7 @@ export default function App() {
 /* 7. DASHBOARD                                                           */
 /* ---------------------------------------------------------------------- */
 
-function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companies, onSelectStudent, onOpenCandidacies }) {
+function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companies, onSelectStudent, onOpenCandidacies, onOpenStudents, onOpenCompanies }) {
   const total = students.length;
   const menors = students.filter((s) => { const age = calcAge(s.dataNaixement); return age != null && age < 18; }).length;
   const majors = students.filter((s) => { const age = calcAge(s.dataNaixement); return age != null && age >= 18; }).length;
@@ -1749,15 +1827,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   const senseSeguiment = students.filter((s) => (s.interviews || []).length === 0).length;
   const en30dies = new Date(); en30dies.setDate(en30dies.getDate() + 30);
   const en30diesIso = toIsoDate(en30dies);
-  const propersMajorsEdat = students.filter((s) => {
-    const age = calcAge(s.dataNaixement);
-    if (age !== 17) return false;
-    const d = new Date(s.dataNaixement);
-    const proper = new Date(d);
-    proper.setFullYear(new Date().getFullYear() + (new Date().getMonth() > d.getMonth() || (new Date().getMonth() === d.getMonth() && new Date().getDate() > d.getDate()) ? 1 : 0));
-    const properIso = toIsoDate(proper);
-    return properIso >= avuiIso && properIso <= en30diesIso;
-  }).length;
+  const propersMajorsEdat = students.filter(turns18Soon).length;
 
   // Les fites de negociació (contactada / vacants confirmades / homologada) NO
   // s'exclouen entre elles — una mateixa empresa sol tenir-les totes marcades a mesura
@@ -1798,11 +1868,11 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
     else placementCounts.noApte++;
   });
   const placementData = [
-    { name: "Confirmats", value: placementCounts.confirmats, color: "#16a34a" },
-    { name: "Candidats en procés", value: placementCounts.candidats, color: "#0ea5e9" },
-    { name: "Sense assignar (apte)", value: placementCounts.senseAssigApte, color: "#f97316" },
-    { name: "Encara no apte", value: placementCounts.noApte, color: "#cbd5e1" },
-    { name: "No fa pràctiques", value: placementCounts.noFa, color: "#94a3b8" },
+    { name: "Confirmats", filterId: "confirmat", value: placementCounts.confirmats, color: "#16a34a" },
+    { name: "Candidats en procés", filterId: "candidat", value: placementCounts.candidats, color: "#0ea5e9" },
+    { name: "Sense assignar (apte)", filterId: "senseApte", value: placementCounts.senseAssigApte, color: "#f97316" },
+    { name: "Encara no apte", filterId: "noApte", value: placementCounts.noApte, color: "#cbd5e1" },
+    { name: "No fa pràctiques", filterId: "noFa", value: placementCounts.noFa, color: "#94a3b8" },
   ].filter((d) => d.value > 0);
 
   // Candidats en procés d'aquest grup (activeCandidatesList ja es basa en "assignats",
@@ -1818,11 +1888,11 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   }));
 
   const negotiationData = [
-    { name: "Pendent de contactar", value: negociacioPendentContactar },
-    { name: "Contactada", value: negociacioContactada },
-    { name: "Vacants confirmades", value: negociacioVacantsConfirmades },
-    { name: "Homologada", value: negociacioHomologada },
-    { name: "No disponible", value: negociacioNoDisponible },
+    { name: "Pendent de contactar", filterId: "pendent", value: negociacioPendentContactar },
+    { name: "Contactada", filterId: "contactada", value: negociacioContactada },
+    { name: "Vacants confirmades", filterId: "vacants", value: negociacioVacantsConfirmades },
+    { name: "Homologada", filterId: "homologada", value: negociacioHomologada },
+    { name: "No disponible", filterId: "noDisponible", value: negociacioNoDisponible },
   ];
 
   return (
@@ -1831,12 +1901,12 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
       <p className="text-sm text-slate-500 mb-6">Visió general de {students.length} alumnes — curs 2n GA (LOMLOE)</p>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <StatTile label="Alumnes totals" value={total} tone="slate" icon={Users} />
+        <StatTile label="Alumnes totals" value={total} tone="slate" icon={Users} onClick={() => onOpenStudents("all")} />
         <StatTile label="Menors / Majors d'edat" value={`${menors} / ${majors}`} tone="slate" icon={ClipboardList} />
-        <StatTile label="Poden fer pràctiques" value={`${apte}/${total}`} tone="green" icon={CheckCircle2} />
-        <StatTile label="No poden cursar alguna assignatura" value={noPotCursar} tone="red" icon={XCircle} />
-        <StatTile label="Fent pràctiques" value={fentPractiques} tone="sky" icon={BriefcaseBusiness} />
-        <StatTile label="Sense assignar a pràctiques" value={senseAssignar} tone="orange" icon={AlertTriangle} />
+        <StatTile label="Poden fer pràctiques" value={`${apte}/${total}`} tone="green" icon={CheckCircle2} onClick={() => onOpenStudents("apte")} />
+        <StatTile label="No poden cursar alguna assignatura" value={noPotCursar} tone="red" icon={XCircle} onClick={() => onOpenStudents("bloquejats")} />
+        <StatTile label="Fent pràctiques" value={placementCounts.confirmats + placementCounts.candidats} tone="sky" icon={BriefcaseBusiness} onClick={() => onOpenStudents("fent")} />
+        <StatTile label="Sense assignar a pràctiques" value={placementCounts.senseAssigApte + placementCounts.noApte} tone="orange" icon={AlertTriangle} onClick={() => onOpenStudents("sense")} />
         <StatTile label="Places de pràctiques" value={placesTotal} tone="slate" icon={Building2} />
         <StatTile label="Places adjudicades" value={`${placesAdjudicades}/${placesTotal}`} tone="green" icon={CheckCircle2} />
       </div>
@@ -1844,29 +1914,29 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
 
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Negociacions amb empreses (totes, compartides entre grups)</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-2">
-        <StatTile label="Pendents de contactar" value={negociacioPendentContactar} tone="slate" icon={Mail} />
-        <StatTile label="Contactades" value={negociacioContactada} tone="sky" icon={Clock} />
-        <StatTile label="Vacants confirmades" value={negociacioVacantsConfirmades} tone="sky" icon={CheckCircle2} />
-        <StatTile label="Homologades" value={negociacioHomologada} tone="green" icon={Handshake} />
-        <StatTile label="No disponibles" value={negociacioNoDisponible} tone={negociacioNoDisponible > 0 ? "red" : "slate"} icon={XCircle} />
+        <StatTile label="Pendents de contactar" value={negociacioPendentContactar} tone="slate" icon={Mail} onClick={() => onOpenCompanies("pendent")} />
+        <StatTile label="Contactades" value={negociacioContactada} tone="sky" icon={Clock} onClick={() => onOpenCompanies("contactada")} />
+        <StatTile label="Vacants confirmades" value={negociacioVacantsConfirmades} tone="sky" icon={CheckCircle2} onClick={() => onOpenCompanies("vacants")} />
+        <StatTile label="Homologades" value={negociacioHomologada} tone="green" icon={Handshake} onClick={() => onOpenCompanies("homologada")} />
+        <StatTile label="No disponibles" value={negociacioNoDisponible} tone={negociacioNoDisponible > 0 ? "red" : "slate"} icon={XCircle} onClick={() => onOpenCompanies("noDisponible")} />
       </div>
       <p className="text-xs text-slate-400 mb-6">Cada fita és independent de les altres — una empresa homologada sol tenir també "contactada" i "vacants confirmades" marcades, ja que hi va passar abans. Per això no sumen el total d'empreses.</p>
       {(conveniPendentSignatures > 0 || negociacioSeguimentsVencuts > 0) && (
         <div className="mb-8 -mt-4 flex flex-wrap gap-2">
           {conveniPendentSignatures > 0 && <Badge tone="orange" icon={AlertTriangle}>{conveniPendentSignatures} conveni(s) pendents de completar les signatures</Badge>}
-          {negociacioSeguimentsVencuts > 0 && <Badge tone="orange" icon={CalendarClock}>{negociacioSeguimentsVencuts} seguiment(s) de negociació vençuts</Badge>}
+          {negociacioSeguimentsVencuts > 0 && <button onClick={() => onOpenCompanies("seguimentVencut")}><Badge tone="orange" icon={CalendarClock}>{negociacioSeguimentsVencuts} seguiment(s) de negociació vençuts ›</Badge></button>}
         </div>
       )}
 
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Seguiment tutorial</p>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-        <StatTile label="Incidències obertes" value={incidenciesObertes} tone={incidenciesObertes > 0 ? "red" : "slate"} icon={ShieldAlert} />
-        <StatTile label="Revisions de seguiment vençudes" value={revisionsPendents} tone={revisionsPendents > 0 ? "orange" : "slate"} icon={CalendarClock} />
-        <StatTile label="Sense cap entrevista encara" value={senseSeguiment} tone={senseSeguiment > 0 ? "orange" : "slate"} icon={MessageCircle} />
-        <StatTile label="Fan 18 anys en 30 dies" value={propersMajorsEdat} tone="slate" icon={Cake} />
+        <StatTile label="Incidències obertes" value={incidenciesObertes} tone={incidenciesObertes > 0 ? "red" : "slate"} icon={ShieldAlert} onClick={() => onOpenStudents("incidencies")} />
+        <StatTile label="Revisions de seguiment vençudes" value={revisionsPendents} tone={revisionsPendents > 0 ? "orange" : "slate"} icon={CalendarClock} onClick={() => onOpenStudents("revisions")} />
+        <StatTile label="Sense cap entrevista encara" value={senseSeguiment} tone={senseSeguiment > 0 ? "orange" : "slate"} icon={MessageCircle} onClick={() => onOpenStudents("senseEntrevista")} />
+        <StatTile label="Fan 18 anys en 30 dies" value={propersMajorsEdat} tone="slate" icon={Cake} onClick={() => onOpenStudents("fan18")} />
       </div>
 
-      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Visió gràfica</p>
+      <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Visió gràfica <span className="normal-case tracking-normal text-slate-300">— clica un sector o una barra per veure'n el llistat</span></p>
       <div className="flex flex-wrap gap-4 mb-8">
         <Card className="p-5">
           <p className="text-sm font-medium text-slate-700 mb-1">Estat de col·locació de l'alumnat</p>
@@ -1875,7 +1945,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
             <p className="text-xs text-slate-400">Encara no hi ha alumnat en aquest grup.</p>
           ) : (
             <PieChart width={280} height={220}>
-              <Pie data={placementData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2}>
+              <Pie data={placementData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} cursor="pointer" onClick={(d) => { const f = d && (d.filterId || (d.payload && d.payload.filterId)); if (f) onOpenStudents(f); }}>
                 {placementData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
               </Pie>
               <Tooltip />
@@ -1895,7 +1965,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
               <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
               <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Bar dataKey="candidats" fill="#0ea5e9" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="candidats" fill="#0ea5e9" radius={[0, 4, 4, 0]} cursor="pointer" onClick={() => onOpenCandidacies()} />
             </BarChart>
           )}
         </Card>
@@ -1911,7 +1981,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
               <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
               <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Bar dataKey="value" fill="#0ea5e9" radius={[0, 4, 4, 0]} />
+              <Bar dataKey="value" fill="#0ea5e9" radius={[0, 4, 4, 0]} cursor="pointer" onClick={(d) => { const f = d && (d.filterId || (d.payload && d.payload.filterId)); if (f) onOpenCompanies(f); }} />
             </BarChart>
           )}
         </Card>
@@ -2579,11 +2649,18 @@ function RaConfigTab({ raWeights, setRaWeights, moduleCourse, setModuleCourse })
 /* 10. LLISTAT D'ALUMNES                                                  */
 /* ---------------------------------------------------------------------- */
 
-function StudentsList({ activeGroup, students, statuses, scheduleStatuses, onSelect, onTrash, onAdd }) {
+function StudentsList({ activeGroup, students, companies, statuses, scheduleStatuses, filter, onFilterChange, onSelect, onTrash, onAdd }) {
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ nom: "", cognoms: "", tipusDoc: "DNI", dni: "" });
-  const filtered = students.filter((s) => normalize(`${s.nom} ${s.cognoms}`).includes(normalize(query))).sort(sortByCognomsNom);
+  const ctx = { companies: companies || [], statuses };
+  const activeFilter = STUDENT_FILTERS.find((f) => f.id === filter) || STUDENT_FILTERS[0];
+  const filterCounts = {};
+  STUDENT_FILTERS.forEach((f) => { filterCounts[f.id] = students.filter((s) => f.test(s, ctx)).length; });
+  const filtered = students
+    .filter((s) => activeFilter.test(s, ctx))
+    .filter((s) => normalize(`${s.nom} ${s.cognoms}`).includes(normalize(query)))
+    .sort(sortByCognomsNom);
 
   function handleTrash(e, s) {
     e.stopPropagation();
@@ -2633,6 +2710,14 @@ function StudentsList({ activeGroup, students, statuses, scheduleStatuses, onSel
         />
       </div>
 
+      <FilterChips
+        groups={[
+          { title: "Col·locació", filters: STUDENT_FILTERS.filter((f) => f.group === "col") },
+          { title: "Altres", filters: STUDENT_FILTERS.filter((f) => f.group === "altres") },
+        ]}
+        counts={filterCounts} value={activeFilter.id} onChange={onFilterChange}
+      />
+
       <div className="grid sm:grid-cols-2 gap-3">
         {filtered.map((s) => {
           const st = statuses[s.id];
@@ -2662,7 +2747,7 @@ function StudentsList({ activeGroup, students, statuses, scheduleStatuses, onSel
             </div>
           );
         })}
-        {filtered.length === 0 && <p className="text-sm text-slate-400 col-span-2">Cap alumne coincideix amb la cerca.</p>}
+        {filtered.length === 0 && <p className="text-sm text-slate-400 col-span-2">Cap alumne coincideix amb la cerca o el filtre.</p>}
       </div>
     </div>
   );
@@ -4313,11 +4398,14 @@ function HistorialTab({ log, onUndo }) {
   );
 }
 
-function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus, onLogActivity }) {
+function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup, filter, onFilterChange, onAssignCompany, onTrashCompany, onUpdateAssignmentStatus, onLogActivity }) {
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [draft, setDraft] = useState({ nom: "", places: 1 });
   const [query, setQuery] = useState("");
+  const activeCompanyFilter = COMPANY_FILTERS.find((f) => f.id === filter) || COMPANY_FILTERS[0];
+  const companyFilterCounts = {};
+  COMPANY_FILTERS.forEach((f) => { companyFilterCounts[f.id] = companies.filter((c) => f.test(c)).length; });
 
   function addCompany() {
     if (!draft.nom) return;
@@ -4397,6 +4485,14 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
         />
       </div>
 
+      <FilterChips
+        groups={[
+          { title: "Negociació", filters: COMPANY_FILTERS.filter((f) => f.group === "neg") },
+          { title: "Candidatures", filters: COMPANY_FILTERS.filter((f) => f.group === "cand") },
+        ]}
+        counts={companyFilterCounts} value={activeCompanyFilter.id} onChange={onFilterChange}
+      />
+
       {adding && (
         <Card className="p-5 mb-5">
           <div className="grid sm:grid-cols-3 gap-3 mb-3">
@@ -4415,7 +4511,7 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
       )}
 
       {(() => {
-        const matching = companies.filter((c) => normalize(c.nom).includes(normalize(query))).sort(sortByNom);
+        const matching = companies.filter((c) => activeCompanyFilter.test(c)).filter((c) => normalize(c.nom).includes(normalize(query))).sort(sortByNom);
         const disponibles = matching.filter((c) => !c.noDisponible);
         const noDisponibles = matching.filter((c) => c.noDisponible);
         const renderCard = (c) => (
@@ -4437,7 +4533,7 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Disponibles ({disponibles.length})</p>
             <div className="grid gap-4 mb-8">
               {disponibles.length === 0 ? (
-                <p className="text-sm text-slate-400">Cap empresa disponible {query ? "amb aquesta cerca" : "encara"}.</p>
+                <p className="text-sm text-slate-400">Cap empresa disponible {(query || activeCompanyFilter.id !== "all") ? "amb aquests filtres" : "encara"}.</p>
               ) : (
                 disponibles.map(renderCard)
               )}
