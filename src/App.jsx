@@ -2867,8 +2867,6 @@ function Field({ label, value, onChange }) {
 // l'usuari. Mentre no hi hagi cap fitxer, mostra un botó per triar-ne un; un cop pujat,
 // mostra el nom com a enllaç per obrir-lo i un botó per treure'l.
 function AbsenceAttachRow({ doc, onAttach, onRemove }) {
-  const fileRef = useRef(null);
-  const cameraRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
 
@@ -2889,6 +2887,12 @@ function AbsenceAttachRow({ doc, onAttach, onRemove }) {
     }
   }
 
+  // Fem servir <label htmlFor> en lloc d'un ref + .click() per codi: alguns navegadors
+  // de mòbil (Android/Safari) bloquegen obrir la càmera o el selector de fitxers quan
+  // l'input és completament invisible (display:none) i es dispara des de JavaScript:
+  // amb <label>, és el propi navegador qui obre l'input en tocar, no codi nostre.
+  const inputCls = "sr-only";
+
   return (
     <div>
       {doc ? (
@@ -2898,16 +2902,16 @@ function AbsenceAttachRow({ doc, onAttach, onRemove }) {
         </div>
       ) : (
         <div className="flex items-center gap-3">
-          <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden"
-            onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
-          <button onClick={() => cameraRef.current.click()} disabled={uploading} className="flex items-center gap-1 text-xs text-sky-600 hover:underline disabled:opacity-50">
+          <label className={`flex items-center gap-1 text-xs text-sky-600 hover:underline cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+            <input type="file" accept="image/*" capture="environment" className={inputCls}
+              onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
             <Camera size={13} /> Fes una foto
-          </button>
-          <input ref={fileRef} type="file" className="hidden"
-            onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
-          <button onClick={() => fileRef.current.click()} disabled={uploading} className="text-xs text-sky-600 hover:underline disabled:opacity-50">
+          </label>
+          <label className={`text-xs text-sky-600 hover:underline cursor-pointer ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+            <input type="file" className={inputCls}
+              onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
             {uploading ? "Pujant..." : "Puja un fitxer"}
-          </button>
+          </label>
         </div>
       )}
       {error && <p className="text-[11px] text-red-500 mt-0.5">{error}</p>}
