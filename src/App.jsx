@@ -7,7 +7,7 @@ import {
   ChevronLeft, X, Plus, Trash2, Save, Search, GraduationCap, BriefcaseBusiness,
   CalendarDays, CalendarOff, Percent, ClipboardList, ArrowLeft, Footprints, Bus,
   MessageCircle, MessageSquare, ShieldAlert, CalendarClock, Cake, Download, RefreshCw,
-  Mail, Handshake, PhoneCall, FileCheck2, History, ListChecks, ArrowRightLeft
+  Mail, Handshake, PhoneCall, FileCheck2, History, ListChecks, ArrowRightLeft, Camera
 } from "lucide-react";
 
 /* ---------------------------------------------------------------------- */
@@ -2829,7 +2829,7 @@ function StudentDetail({ student, status, raWeights, moduleCourse, schedule, sch
       )}
       {section === "seguiment" && (
         <SeguimentSection
-          student={student}
+          student={student} onUpdateStudent={onUpdateStudent}
           onAddInterview={onAddInterview} onUpdateInterview={onUpdateInterview} onDeleteInterview={onDeleteInterview}
           onAddIncident={onAddIncident} onUpdateIncident={onUpdateIncident} onDeleteIncident={onDeleteIncident}
         />
@@ -2866,6 +2866,55 @@ function Field({ label, value, onChange }) {
 // Fila reutilitzable per adjuntar un document (justificant, certificat...) al Drive de
 // l'usuari. Mentre no hi hagi cap fitxer, mostra un botó per triar-ne un; un cop pujat,
 // mostra el nom com a enllaç per obrir-lo i un botó per treure'l.
+function AbsenceAttachRow({ doc, onAttach, onRemove }) {
+  const fileRef = useRef(null);
+  const cameraRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleFile(file) {
+    if (typeof window === "undefined" || !window.__DRIVE_UPLOAD_DOC__) {
+      setError("La pujada de documents no està disponible en aquest entorn.");
+      return;
+    }
+    setUploading(true);
+    setError("");
+    try {
+      const uploaded = await window.__DRIVE_UPLOAD_DOC__(file);
+      onAttach(uploaded);
+    } catch (e) {
+      setError("No s'ha pogut pujar el fitxer.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div>
+      {doc ? (
+        <div className="flex items-center gap-2">
+          <a href={doc.link} target="_blank" rel="noopener noreferrer" className="text-xs text-sky-600 hover:underline truncate max-w-[220px]">{doc.name}</a>
+          <button onClick={onRemove} className="text-slate-300 hover:text-red-500"><X size={12} /></button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-3">
+          <input ref={cameraRef} type="file" accept="image/*" capture="environment" className="hidden"
+            onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
+          <button onClick={() => cameraRef.current.click()} disabled={uploading} className="flex items-center gap-1 text-xs text-sky-600 hover:underline disabled:opacity-50">
+            <Camera size={13} /> Fes una foto
+          </button>
+          <input ref={fileRef} type="file" className="hidden"
+            onChange={(e) => { if (e.target.files[0]) handleFile(e.target.files[0]); e.target.value = ""; }} />
+          <button onClick={() => fileRef.current.click()} disabled={uploading} className="text-xs text-sky-600 hover:underline disabled:opacity-50">
+            {uploading ? "Pujant..." : "Puja un fitxer"}
+          </button>
+        </div>
+      )}
+      {error && <p className="text-[11px] text-red-500 mt-0.5">{error}</p>}
+    </div>
+  );
+}
+
 function DocumentAttachRow({ label, doc, onAttach, onRemove }) {
   const inputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
@@ -3073,9 +3122,24 @@ function AcademicSection({ student, status, raWeights, moduleCourse, onUpdateNot
   );
 }
 
-function SeguimentSection({ student, onAddInterview, onUpdateInterview, onDeleteInterview, onAddIncident, onUpdateIncident, onDeleteIncident }) {
+function SeguimentSection({ student, onUpdateStudent, onAddInterview, onUpdateInterview, onDeleteInterview, onAddIncident, onUpdateIncident, onDeleteIncident }) {
   const [newInterview, setNewInterview] = useState({ data: "", motiu: "", notes: "", properaRevisio: "" });
   const [newIncident, setNewIncident] = useState({ data: "", descripcio: "" });
+  const [newAbsence, setNewAbsence] = useState({ data: "", motiu: "" });
+  const absences = [...(student.absenceJustifications || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
+
+  function addAbsence() {
+    if (!newAbsence.data) return;
+    const entry = { id: "ab" + Math.random().toString(36).slice(2, 8), ...newAbsence, file: null };
+    onUpdateStudent({ absenceJustifications: [...(student.absenceJustifications || []), entry] });
+    setNewAbsence({ data: "", motiu: "" });
+  }
+  function updateAbsence(id, patch) {
+    onUpdateStudent({ absenceJustifications: (student.absenceJustifications || []).map((a) => (a.id === id ? { ...a, ...patch } : a)) });
+  }
+  function deleteAbsence(id) {
+    onUpdateStudent({ absenceJustifications: (student.absenceJustifications || []).filter((a) => a.id !== id) });
+  }
 
   const interviews = [...(student.interviews || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
   const incidents = [...(student.incidents || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
@@ -3187,6 +3251,44 @@ function SeguimentSection({ student, onAddInterview, onUpdateInterview, onDelete
                     </button>
                     <button onClick={() => onDeleteIncident(n.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={14} /></button>
                   </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <p className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2"><FileCheck2 size={16} className="text-sky-500" /> Justificants de faltes d'assistència</p>
+        <p className="text-xs text-slate-400 mb-3">Cada justificant pot portar una foto feta amb el mòbil o un fitxer adjunt.</p>
+        <Card className="p-4 mb-3">
+          <div className="grid sm:grid-cols-2 gap-3 mb-3">
+            <label className="block">
+              <span className="text-xs text-slate-400">Data de la falta</span>
+              <input type="date" value={newAbsence.data} onChange={(e) => setNewAbsence({ ...newAbsence, data: e.target.value })}
+                className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-300" />
+            </label>
+            <Field label="Motiu (opcional)" value={newAbsence.motiu} onChange={(v) => setNewAbsence({ ...newAbsence, motiu: v })} />
+          </div>
+          <button onClick={addAbsence} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 text-white text-xs font-medium hover:bg-sky-600">
+            <Plus size={13} /> Afegeix justificant
+          </button>
+        </Card>
+
+        {absences.length === 0 ? (
+          <p className="text-xs text-slate-400">Cap justificant registrat.</p>
+        ) : (
+          <div className="space-y-2">
+            {absences.map((a) => (
+              <Card key={a.id} className="p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm text-slate-800">{a.data} {a.motiu && <span className="text-slate-500 font-normal">— {a.motiu}</span>}</p>
+                    <div className="mt-2">
+                      <AbsenceAttachRow doc={a.file} onAttach={(file) => updateAbsence(a.id, { file })} onRemove={() => updateAbsence(a.id, { file: null })} />
+                    </div>
+                  </div>
+                  <button onClick={() => deleteAbsence(a.id)} className="text-slate-300 hover:text-red-500 shrink-0"><Trash2 size={14} /></button>
                 </div>
               </Card>
             ))}
@@ -4079,6 +4181,7 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
             <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Dades de l'empresa</p>
             <p className="text-xs text-slate-400 mb-2">Mateix format que l'adreça de l'alumnat (carrer/plaça i número, codi postal, municipi) — cal perquè es puguin calcular els minuts de trajecte a peu.</p>
             <div className="grid sm:grid-cols-3 gap-3">
+              <Field label="NIF/CIF" value={c.nif} onChange={(v) => onUpdate({ nif: v })} />
               <Field label="Adreça" value={c.adreca} onChange={(v) => onUpdate({ adreca: v })} />
               <Field label="Codi postal" value={c.cp} onChange={(v) => onUpdate({ cp: v })} />
               <Field label="Municipi" value={c.municipi} onChange={(v) => onUpdate({ municipi: v })} />
@@ -4412,7 +4515,7 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
     const id = "c" + Math.random().toString(36).slice(2, 9);
     setCompanies((prev) => [...prev, {
       id, nom: draft.nom, places: Number(draft.places), assignats: [],
-      adreca: "", cp: "", municipi: "", pais: "", telefon: "", email: "",
+      nif: "", adreca: "", cp: "", municipi: "", pais: "", telefon: "", email: "",
       responsableNom: "", responsableCarrec: "",
       tutorNom: "", tutorTelefon: "", tutorEmail: "",
       activitats: [],
