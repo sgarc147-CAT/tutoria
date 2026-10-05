@@ -569,7 +569,7 @@ const COMPANY_FILTERS = [
   { id: "noDisponible", group: "neg", label: "No disponibles", test: (c) => !!c.noDisponible },
   { id: "ambCandidatures", group: "cand", label: "Amb candidatures", test: (c) => c.assignats.length > 0 },
   { id: "senseCandidatures", group: "cand", label: "Sense candidatures", test: (c) => c.assignats.length === 0 && !c.noDisponible },
-  { id: "seguimentVencut", group: "cand", label: "Seguiment vençut", test: (c) => (c.contacts || []).some((ct) => ct.propseguiment && ct.propseguiment <= toIsoDate(new Date())) },
+  { id: "seguimentVencut", group: "cand", label: "Seguiment vençut", test: (c) => (c.contacts || []).some((ct) => ct.propseguiment && !ct.seguimentFet && ct.propseguiment <= toIsoDate(new Date())) },
 ];
 
 // Excel guarda les dates com un número de sèrie (dies des del 30/12/1899), no com a text.
@@ -1846,7 +1846,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   // Contactes de negociació amb una data de seguiment marcada i ja vençuda (totes les
   // empreses, ja que la negociació és compartida entre grups).
   const negociacioSeguimentsVencuts = companies.reduce(
-    (sum, c) => sum + (c.contacts || []).filter((ct) => ct.propseguiment && ct.propseguiment <= avuiIso).length,
+    (sum, c) => sum + (c.contacts || []).filter((ct) => ct.propseguiment && !ct.seguimentFet && ct.propseguiment <= avuiIso).length,
     0
   );
 
@@ -4094,7 +4094,7 @@ function CompanyInbox({ company, onAddContact }) {
   );
 }
 
-function CompanyCard({ company: c, students, statuses, companies, activeGroup, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateAssignmentStatus }) {
+function CompanyCard({ company: c, students, statuses, companies, activeGroup, expanded, onToggleExpand, onUpdate, onRemove, onToggleAssign, onToggleActivity, onAddContact, onDeleteContact, onUpdateContact, onUpdateAssignmentStatus }) {
   const totalActivitats = ACTIVITY_PLAN.reduce((n, cat) => n + cat.items.length, 0);
   const selectedCount = (c.activitats || []).length;
   const contacts = [...(c.contacts || [])].sort((a, b) => (b.data || "").localeCompare(a.data || ""));
@@ -4264,7 +4264,8 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
             ) : (
               <div className="space-y-2">
                 {contacts.map((ct) => {
-                  const overdue = ct.propseguiment && ct.propseguiment <= toIsoDate(new Date());
+                  const done = !!ct.seguimentFet;
+                  const overdue = ct.propseguiment && !done && ct.propseguiment <= toIsoDate(new Date());
                   return (
                     <div key={ct.id} className={`flex items-start justify-between gap-2 px-3 py-2 rounded-lg border ${overdue ? "bg-orange-50 border-orange-200" : "bg-slate-50 border-slate-100"}`}>
                       <div className="flex items-start gap-2">
@@ -4273,9 +4274,19 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
                           <p className="text-xs font-medium text-slate-700">{ct.tipus} <span className="text-slate-400 font-normal">— {ct.data}</span></p>
                           {ct.notes && <p className="text-xs text-slate-500 mt-0.5">{ct.notes}</p>}
                           {ct.propseguiment && (
-                            <p className={`text-xs mt-1 flex items-center gap-1 ${overdue ? "text-orange-600 font-medium" : "text-slate-400"}`}>
-                              <CalendarClock size={12} /> {overdue ? "Seguiment vençut" : "Fer seguiment"} el {ct.propseguiment}
-                            </p>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                              <p className={`text-xs flex items-center gap-1 ${done ? "text-slate-400 line-through" : overdue ? "text-orange-600 font-medium" : "text-slate-400"}`}>
+                                <CalendarClock size={12} /> {overdue ? "Seguiment vençut" : "Fer seguiment"} el {ct.propseguiment}
+                              </p>
+                              {done ? (
+                                <>
+                                  <span className="text-xs text-green-600 flex items-center gap-1"><CheckCircle2 size={12} /> Seguiment fet</span>
+                                  <button onClick={() => onUpdateContact(ct.id, { seguimentFet: false })} className="text-[11px] text-slate-400 hover:text-sky-600 hover:underline">Reobre</button>
+                                </>
+                              ) : (
+                                <button onClick={() => onUpdateContact(ct.id, { seguimentFet: true })} className="text-xs text-sky-600 hover:underline font-medium">Marca com a fet</button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>
@@ -4559,6 +4570,10 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
     setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, contacts: [...(c.contacts || []), contact] } : c)));
   }
 
+  function updateCompanyContact(id, contactId, patch) {
+    setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, contacts: (c.contacts || []).map((ct) => (ct.id === contactId ? { ...ct, ...patch } : ct)) } : c)));
+  }
+
   function deleteCompanyContact(id, contactId) {
     setCompanies((prev) => prev.map((c) => (c.id === id ? { ...c, contacts: (c.contacts || []).filter((ct) => ct.id !== contactId) } : c)));
   }
@@ -4632,6 +4647,7 @@ function CompaniesTab({ companies, setCompanies, students, statuses, activeGroup
             onToggleActivity={(itemId) => toggleActivity(c.id, itemId)}
             onAddContact={(contact) => addCompanyContact(c.id, contact)}
             onDeleteContact={(contactId) => deleteCompanyContact(c.id, contactId)}
+            onUpdateContact={(contactId, patch) => updateCompanyContact(c.id, contactId, patch)}
             onUpdateAssignmentStatus={(studentId, patch) => onUpdateAssignmentStatus(c.id, studentId, patch)}
           />
         );
