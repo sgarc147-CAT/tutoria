@@ -7,7 +7,7 @@ import {
   ChevronLeft, X, Plus, Trash2, Save, Search, GraduationCap, BriefcaseBusiness,
   CalendarDays, CalendarOff, Percent, ClipboardList, ArrowLeft, Footprints, Bus,
   MessageCircle, MessageSquare, ShieldAlert, CalendarClock, Cake, Download, RefreshCw,
-  Mail, Handshake, PhoneCall, FileCheck2, History, ListChecks, ArrowRightLeft, Camera
+  Mail, Handshake, PhoneCall, FileCheck2, History, ListChecks, ArrowRightLeft, Camera, ShieldCheck, Copy
 } from "lucide-react";
 
 /* ---------------------------------------------------------------------- */
@@ -542,10 +542,26 @@ function turns18Soon(s) {
   const properIso = toIsoDate(proper);
   return properIso >= toIsoDate(now) && properIso <= toIsoDate(en30);
 }
+// Registre del lliurament del document informatiu de protecció de dades (RGPD).
+// student.rgpd = { lliurat, data (ISO), per (correu de qui ho registra), mitja, nota, rebut (fitxer) }
+const RGPD_MITJANS = ["En paper (signat)", "Correu electrònic", "Plataforma del centre", "Altres"];
+function rgpdLliurat(s) { return !!(s && s.rgpd && s.rgpd.lliurat); }
+function fmtDataCa(iso) {
+  if (!iso) return "";
+  const [y, m, d] = String(iso).slice(0, 10).split("-");
+  return y && m && d ? `${d}/${m}/${y}` : String(iso);
+}
+// Adreces on reclamar-ho: l'alumne i, si és menor d'edat, també pares/tutors legals.
+function rgpdContactEmails(s) {
+  const age = calcAge(s.dataNaixement);
+  const list = [s.emailPersonal, s.emailInstitut];
+  if (age != null && age < 18) list.push(s.pareEmail);
+  return list.map((e) => (e || "").trim()).filter((e) => e && e.includes("@"));
+}
 // Filtres disponibles a la llista d'alumnat (ctx = { companies, statuses }).
 const STUDENT_FILTERS = [
   { id: "all", group: "col", label: "Tots", test: () => true },
-  { id: "fent", group: "col", label: "Fent pràctiques", test: (s, x) => ["confirmat", "candidat"].includes(placementKey(s, x.companies, x.statuses)) },
+  { id: "fent", group: "col", label: "Assignats a empresa", test: (s, x) => ["confirmat", "candidat"].includes(placementKey(s, x.companies, x.statuses)) },
   { id: "confirmat", group: "col", label: "Confirmats", test: (s, x) => placementKey(s, x.companies, x.statuses) === "confirmat" },
   { id: "candidat", group: "col", label: "Candidats en procés", test: (s, x) => placementKey(s, x.companies, x.statuses) === "candidat" },
   { id: "sense", group: "col", label: "Sense assignar", test: (s, x) => ["senseApte", "noApte"].includes(placementKey(s, x.companies, x.statuses)) },
@@ -558,6 +574,8 @@ const STUDENT_FILTERS = [
   { id: "revisions", group: "altres", label: "Revisió vençuda", test: (s) => (s.interviews || []).some((iv) => iv.properaRevisio && iv.properaRevisio <= toIsoDate(new Date())) },
   { id: "senseEntrevista", group: "altres", label: "Sense cap entrevista", test: (s) => (s.interviews || []).length === 0 },
   { id: "fan18", group: "altres", label: "Fan 18 anys aviat", test: (s) => turns18Soon(s) },
+  { id: "rgpdPendent", group: "altres", label: "Sense RGPD lliurat", test: (s) => !rgpdLliurat(s) },
+  { id: "rgpdLliurat", group: "altres", label: "RGPD lliurat", test: (s) => rgpdLliurat(s) },
 ];
 // Filtres disponibles a la llista d'empreses.
 const COMPANY_FILTERS = [
@@ -1087,6 +1105,61 @@ function mergeActivityLog(remote, local) {
     .slice(-ACTIVITY_LOG_CAP);
 }
 
+// ---- Fusió de la configuració compartida (horaris de pràctiques, festius, pesos RA, plantilla
+// d'horari de 1r...) ----
+// Abans aquests camps es quedaven sempre amb el valor local: qui desava darrer sobreescrivia
+// els canvis de l'altra persona i, a més, mai arribaven a l'altra banda. Ara es fusionen
+// "de tres bandes": base (el que hi havia al Drive l'última vegada que ens hi vam sincronitzar),
+// remot (el que hi ha ara) i local (el que té aquesta pantalla). Per a cada clau (per exemple,
+// l'horari d'un alumne concret): si només has canviat tu, guanyes tu; si només ha canviat
+// l'altra persona, guanya el remot; si tots dos heu canviat LA MATEIXA clau, guanya el local.
+const CONFIG_FIELDS = ["raWeights", "moduleCourse", "classTemplate", "schedules", "holidays"];
+
+function jsonEq(a, b) {
+  return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b);
+}
+
+function merge3Map(base, remote, local) {
+  const b = base || {}, r = remote || {}, l = local || {};
+  const out = {};
+  new Set([...Object.keys(b), ...Object.keys(r), ...Object.keys(l)]).forEach((k) => {
+    const localChanged = !jsonEq(l[k], b[k]);
+    const chosen = localChanged ? l[k] : r[k];
+    if (chosen !== undefined) out[k] = chosen;
+  });
+  return out;
+}
+
+// Festius: llista de dates. Es parteix del remot, s'hi afegeixen les dates que has afegit tu
+// i se'n treuen les que has tret tu, de manera que dos festius afegits per persones diferents
+// hi són tots dos, i un que has desmarcat no reapareix.
+function mergeHolidays(base, remote, local) {
+  const b = new Set(base || []);
+  const l = new Set(local || []);
+  const added = [...l].filter((d) => !b.has(d));
+  const removed = new Set([...b].filter((d) => !l.has(d)));
+  return Array.from(new Set([...(remote || []), ...added])).filter((d) => !removed.has(d)).sort();
+}
+
+function mergeConfigField(field, base, remote, local) {
+  if (remote == null) return local;
+  if (field === "holidays") return mergeHolidays(base, remote, local);
+  return merge3Map(base, remote, local);
+}
+
+function mergeConfig(base, remote, local) {
+  const out = {};
+  CONFIG_FIELDS.forEach((f) => { out[f] = mergeConfigField(f, base ? base[f] : undefined, remote[f], local[f]); });
+  return out;
+}
+
+// Quan dues persones han triat una carpeta de documents diferent, guanya la decidida més tard.
+function mergeDocsFolder(remote, local) {
+  if (!remote) return local || null;
+  if (!local) return remote;
+  return (local.setAt || "") > (remote.setAt || "") ? local : remote;
+}
+
 // Compta les hores de pràctiques dia a dia dins d'un període (en lloc de fer una
 // mitjana per setmanes), excloent sempre els caps de setmana i qualsevol data marcada
 // com a festiu/vacances al calendari. Retorna també els conflictes amb l'horari de 1r.
@@ -1196,6 +1269,14 @@ export default function App() {
   // puguin veure qui ha fet què i desfer confusions. Es limita a les últimes entrades
   // perquè el fitxer no creixi sense parar.
   const [activityLog, setActivityLog] = useState(initial.activityLog || []);
+  // Carpeta del Drive on van tots els documents adjunts ({id, setAt}); viatja amb les dades
+  // perquè totes les persones pugin a la mateixa carpeta compartida.
+  const [docsFolder, setDocsFolder] = useState(initial.docsFolder || null);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.__DOCS_FOLDER__ = docsFolder;
+    window.__ON_DOCS_FOLDER__ = setDocsFolder;
+  }, [docsFolder]);
   function logActivity(action, details, undo) {
     const entry = {
       id: "log" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
@@ -1215,6 +1296,8 @@ export default function App() {
     if (u.type === "assignment") assignCompanyToStudent(u.studentId, u.previousCompanyId);
     else if (u.type === "stage") updateAssignmentStatus(u.companyId, u.studentId, { stage: u.previousStage });
     else if (u.type === "milestone") setCompanies((prev) => prev.map((c) => (c.id === u.companyId ? { ...c, [u.key]: u.previousValue } : c)));
+    else if (u.type === "rgpd") updateStudent(u.studentId, { rgpd: u.previous });
+    else if (u.type === "rgpdBulk") setStudents((prev) => prev.map((s) => (Object.prototype.hasOwnProperty.call(u.previous, s.id) ? { ...s, rgpd: u.previous[s.id] } : s)));
   }
 
   // Manté un registre de l'últim estat sincronitzat amb el Drive, per poder detectar quins
@@ -1222,11 +1305,33 @@ export default function App() {
   // tocar cada funció que els modifica.
   const lastSyncedRef = useRef({ students: initial.students || MOCK_STUDENTS, companies: initial.companies || MOCK_COMPANIES });
 
+  // Còpia de la configuració compartida tal com era al Drive l'última vegada que ens hi
+  // vam sincronitzar: és el punt de partida comú de la fusió de tres bandes (veure
+  // mergeConfigField), perquè els canvis d'horaris/festius/pesos RA de l'altra persona no
+  // es perdin ni sobreescriguin els teus.
+  const syncedConfigRef = useRef(null);
+  if (syncedConfigRef.current === null) syncedConfigRef.current = { raWeights, moduleCourse, classTemplate, schedules, holidays };
+  const CONFIG_SETTERS = { raWeights: setRaWeights, moduleCourse: setModuleCourse, classTemplate: setClassTemplate, schedules: setSchedules, holidays: setHolidays };
+  // Incorpora la configuració remota a l'estat local sense trepitjar el que hagis canviat
+  // tu (mergeBase = referència per saber què ha canviat localment) i recorda-la com a nova base.
+  function absorbRemoteConfig(remote, mergeBase) {
+    CONFIG_FIELDS.forEach((f) => {
+      if (remote[f] == null) return;
+      CONFIG_SETTERS[f]((prev) => {
+        const out = mergeConfigField(f, mergeBase[f], remote[f], prev);
+        return jsonEq(out, prev) ? prev : out;
+      });
+    });
+    const next = { ...syncedConfigRef.current };
+    CONFIG_FIELDS.forEach((f) => { if (remote[f] != null) next[f] = remote[f]; });
+    syncedConfigRef.current = next;
+  }
+
   // Sempre conté les dades més recents (s'actualitza a cada render), perquè runSave() es
   // pugui reintentar amb dades fresques quan hi ha desats en cua.
   const latestRef = useRef(null);
   useEffect(() => {
-    latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog };
+    latestRef.current = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog, docsFolder };
   });
 
   // Evita que dues operacions de Drive (el desat automàtic i l'actualització periòdica)
@@ -1245,7 +1350,7 @@ export default function App() {
       const stampedCompanies = stampChanged(lastSyncedRef.current.companies, cur.companies);
       const payload = { ...cur, students: stampedStudents, companies: stampedCompanies };
       const timeout = new Promise((resolve) => setTimeout(() => resolve(null), 20000));
-      const merged = await Promise.race([window.__SAVE_DATA__(payload), timeout]);
+      const merged = await Promise.race([window.__SAVE_DATA__(payload, syncedConfigRef.current), timeout]);
       const finalStudents = merged ? merged.students : stampedStudents;
       const finalCompanies = merged ? merged.companies : stampedCompanies;
       lastSyncedRef.current = { students: finalStudents, companies: finalCompanies };
@@ -1255,6 +1360,8 @@ export default function App() {
         if (merged.deletedStudentIds && !sameMap(merged.deletedStudentIds, cur.deletedStudentIds)) setDeletedStudentIds(merged.deletedStudentIds);
         if (merged.deletedCompanyIds && !sameMap(merged.deletedCompanyIds, cur.deletedCompanyIds)) setDeletedCompanyIds(merged.deletedCompanyIds);
         if (merged.activityLog && !sameLog(merged.activityLog, cur.activityLog)) setActivityLog(merged.activityLog);
+        absorbRemoteConfig(merged, cur);
+        if (merged.docsFolder && !jsonEq(merged.docsFolder, cur.docsFolder)) setDocsFolder(merged.docsFolder);
         setSaveStatus("saved");
       } else {
         setSaveStatus("error");
@@ -1273,7 +1380,7 @@ export default function App() {
     setSaveStatus("pending");
     const t = setTimeout(() => { runSave(); }, 800);
     return () => clearTimeout(t);
-  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog]);
+  }, [activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog, docsFolder]);
 
   useEffect(() => {
     function handleBeforeUnload(e) {
@@ -1312,6 +1419,9 @@ export default function App() {
       });
       const mergedLog = mergeActivityLog(remote.activityLog, latestRef.current.activityLog);
       if (!sameLog(mergedLog, latestRef.current.activityLog)) setActivityLog(mergedLog);
+      absorbRemoteConfig(remote, syncedConfigRef.current);
+      const mergedFolder = mergeDocsFolder(remote.docsFolder, latestRef.current.docsFolder);
+      if (mergedFolder && !jsonEq(mergedFolder, latestRef.current.docsFolder)) setDocsFolder(mergedFolder);
     }
     const interval = setInterval(pull, 45000);
     function onVisible() { if (document.visibilityState === "visible") pull(); }
@@ -1320,7 +1430,7 @@ export default function App() {
   }, []);
 
   function downloadBackup() {
-    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog };
+    const payload = { activeGroup, students, companies, raWeights, moduleCourse, classTemplate, schedules, holidays, deletedStudentIds, deletedCompanyIds, activityForm, activityLog, docsFolder };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1402,6 +1512,36 @@ export default function App() {
 
   function updateStudent(id, patch) {
     setStudents((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }
+  // Marca/desmarca el lliurament del document de protecció de dades. En deixa data i autor
+  // a la fitxa i constància a l'historial (reversible).
+  function setRgpdDelivered(id, lliurat) {
+    const s = students.find((x) => x.id === id);
+    if (!s) return;
+    const previous = s.rgpd || null;
+    const nom = `${s.nom} ${s.cognoms}`;
+    if (lliurat) {
+      const user = (typeof window !== "undefined" && window.__CURRENT_USER_EMAIL__) || "";
+      updateStudent(id, { rgpd: { ...(previous || {}), lliurat: true, data: toIsoDate(new Date()), per: user } });
+      logActivity("RGPD lliurat", nom, { type: "rgpd", studentId: id, previous });
+    } else {
+      if (!window.confirm(`Desmarcar el lliurament del document de protecció de dades de ${nom}? Es perdran la data i qui ho va registrar (ho podràs desfer des de l'historial).`)) return;
+      updateStudent(id, { rgpd: { ...(previous || {}), lliurat: false, data: "", per: "" } });
+      logActivity("RGPD desmarcat", nom, { type: "rgpd", studentId: id, previous });
+    }
+  }
+  // Marca de cop el lliurament a diversos alumnes (p. ex. el dia que es reparteix a classe).
+  function setRgpdBulk(ids) {
+    const targets = students.filter((s) => ids.includes(s.id) && !rgpdLliurat(s));
+    if (targets.length === 0) return;
+    if (!window.confirm(`Marcar com a lliurat el document de protecció de dades a ${targets.length} alumne(s)? Hi quedarà la data d'avui i el registre a l'historial (es pot desfer).`)) return;
+    const user = (typeof window !== "undefined" && window.__CURRENT_USER_EMAIL__) || "";
+    const today = toIsoDate(new Date());
+    const previous = {};
+    targets.forEach((s) => { previous[s.id] = s.rgpd || null; });
+    setStudents((prev) => prev.map((s) => (Object.prototype.hasOwnProperty.call(previous, s.id)
+      ? { ...s, rgpd: { ...(s.rgpd || {}), lliurat: true, data: today, per: user } } : s)));
+    logActivity("RGPD lliurat (en bloc)", `${targets.length} alumnes del grup ${activeGroup}`, { type: "rgpdBulk", previous });
   }
   function updateStudentNotes(id, moduleCode, raIndex, value) {
     setStudents((prev) => prev.map((s) => {
@@ -1732,7 +1872,7 @@ export default function App() {
         )}
         {tab === "calendari" && <HolidayCalendarTab holidays={holidays} onToggle={toggleHoliday} />}
         {tab === "students" && !selectedStudent && (
-          <StudentsList activeGroup={activeGroup} students={groupStudents} companies={activeCompanies} statuses={statuses} scheduleStatuses={scheduleStatuses} filter={studentFilter} onFilterChange={setStudentFilter} onSelect={setSelectedStudentId} onTrash={trashStudent} onAdd={(basic) => setSelectedStudentId(addManualStudent(basic))} />
+          <StudentsList activeGroup={activeGroup} students={groupStudents} companies={activeCompanies} statuses={statuses} scheduleStatuses={scheduleStatuses} filter={studentFilter} onFilterChange={setStudentFilter} onSelect={setSelectedStudentId} onTrash={trashStudent} onAdd={(basic) => setSelectedStudentId(addManualStudent(basic))} onSetRgpd={setRgpdDelivered} onSetRgpdBulk={setRgpdBulk} />
         )}
         {tab === "students" && selectedStudent && (
           <StudentDetail
@@ -1756,6 +1896,7 @@ export default function App() {
             onUpdateIncident={(nid, patch) => updateIncident(selectedStudent.id, nid, patch)}
             onDeleteIncident={(nid) => deleteIncident(selectedStudent.id, nid)}
             onUpdateStudent={(patch) => updateStudent(selectedStudent.id, patch)}
+            onSetRgpd={(v) => setRgpdDelivered(selectedStudent.id, v)}
             onUpdateNote={(mod, i, v) => updateStudentNotes(selectedStudent.id, mod, i, v)}
             onUpdateNotaEmpresa={(v) => updateNotaEmpresa(selectedStudent.id, v)}
             onUpdateSchedule={(patch) => updateSchedule(selectedStudent.id, patch)}
@@ -1828,6 +1969,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   const en30dies = new Date(); en30dies.setDate(en30dies.getDate() + 30);
   const en30diesIso = toIsoDate(en30dies);
   const propersMajorsEdat = students.filter(turns18Soon).length;
+  const rgpdPendents = students.filter((s) => !rgpdLliurat(s)).length;
 
   // Les fites de negociació (contactada / vacants confirmades / homologada) NO
   // s'exclouen entre elles — una mateixa empresa sol tenir-les totes marcades a mesura
@@ -1840,8 +1982,13 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
   const negociacioPendentContactar = companies.filter((c) => !c.contactada).length;
   const negociacioNoDisponible = companies.filter((c) => c.noDisponible).length;
   const conveniPendentSignatures = companies.reduce((sum, c) => {
-    const entries = Object.entries(c.assignmentStatus || {}).filter(([sid]) => groupStudentIds.has(sid));
-    return sum + entries.filter(([, as]) => as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean)).length;
+    // Només compta qui està assignat ARA a aquesta empresa (assignmentStatus conserva l'estat
+    // de tothom que hi ha passat, encara que ja s'hagi mogut a una altra).
+    return sum + c.assignats.filter((sid) => {
+      if (!groupStudentIds.has(sid)) return false;
+      const as = (c.assignmentStatus || {})[sid];
+      return !!as && as.stage === "conveni" && !Object.values(as.signatures || {}).every(Boolean);
+    }).length;
   }, 0);
   // Contactes de negociació amb una data de seguiment marcada i ja vençuda (totes les
   // empreses, ja que la negociació és compartida entre grups).
@@ -1900,12 +2047,22 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
       <h1 className="text-xl font-semibold text-slate-800 mb-1">Dashboard del grup {activeGroup}</h1>
       <p className="text-sm text-slate-500 mb-6">Visió general de {students.length} alumnes — curs 2n GA (LOMLOE)</p>
 
+      {rgpdPendents > 0 && (
+        <button onClick={() => onOpenStudents("rgpdPendent")} className="mb-6 w-full text-left">
+          <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 hover:bg-red-100">
+            <ShieldAlert size={18} className="shrink-0" />
+            <span><b>{rgpdPendents}</b> alumne(s) sense el document de protecció de dades lliurat — clica per veure'ls i reclamar-los</span>
+            <ChevronRight size={16} className="ml-auto shrink-0" />
+          </div>
+        </button>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <StatTile label="Alumnes totals" value={total} tone="slate" icon={Users} onClick={() => onOpenStudents("all")} />
         <StatTile label="Menors / Majors d'edat" value={`${menors} / ${majors}`} tone="slate" icon={ClipboardList} />
         <StatTile label="Poden fer pràctiques" value={`${apte}/${total}`} tone="green" icon={CheckCircle2} onClick={() => onOpenStudents("apte")} />
         <StatTile label="No poden cursar alguna assignatura" value={noPotCursar} tone="red" icon={XCircle} onClick={() => onOpenStudents("bloquejats")} />
-        <StatTile label="Fent pràctiques" value={placementCounts.confirmats + placementCounts.candidats} tone="sky" icon={BriefcaseBusiness} onClick={() => onOpenStudents("fent")} />
+        <StatTile label="Assignats a una empresa" value={placementCounts.confirmats + placementCounts.candidats} tone="sky" icon={BriefcaseBusiness} onClick={() => onOpenStudents("fent")} />
         <StatTile label="Sense assignar a pràctiques" value={placementCounts.senseAssigApte + placementCounts.noApte} tone="orange" icon={AlertTriangle} onClick={() => onOpenStudents("sense")} />
         <StatTile label="Places de pràctiques" value={placesTotal} tone="slate" icon={Building2} />
         <StatTile label="Places adjudicades" value={`${placesAdjudicades}/${placesTotal}`} tone="green" icon={CheckCircle2} />
@@ -1934,6 +2091,7 @@ function Dashboard({ activeGroup, students, statuses, scheduleStatuses, companie
         <StatTile label="Revisions de seguiment vençudes" value={revisionsPendents} tone={revisionsPendents > 0 ? "orange" : "slate"} icon={CalendarClock} onClick={() => onOpenStudents("revisions")} />
         <StatTile label="Sense cap entrevista encara" value={senseSeguiment} tone={senseSeguiment > 0 ? "orange" : "slate"} icon={MessageCircle} onClick={() => onOpenStudents("senseEntrevista")} />
         <StatTile label="Fan 18 anys en 30 dies" value={propersMajorsEdat} tone="slate" icon={Cake} onClick={() => onOpenStudents("fan18")} />
+        <StatTile label="Sense RGPD lliurat" value={rgpdPendents} tone={rgpdPendents > 0 ? "red" : "green"} icon={ShieldCheck} onClick={() => onOpenStudents("rgpdPendent")} />
       </div>
 
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Visió gràfica <span className="normal-case tracking-normal text-slate-300">— clica un sector o una barra per veure'n el llistat</span></p>
@@ -2649,8 +2807,9 @@ function RaConfigTab({ raWeights, setRaWeights, moduleCourse, setModuleCourse })
 /* 10. LLISTAT D'ALUMNES                                                  */
 /* ---------------------------------------------------------------------- */
 
-function StudentsList({ activeGroup, students, companies, statuses, scheduleStatuses, filter, onFilterChange, onSelect, onTrash, onAdd }) {
+function StudentsList({ activeGroup, students, companies, statuses, scheduleStatuses, filter, onFilterChange, onSelect, onTrash, onAdd, onSetRgpd, onSetRgpdBulk }) {
   const [query, setQuery] = useState("");
+  const [copied, setCopied] = useState(false);
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ nom: "", cognoms: "", tipusDoc: "DNI", dni: "" });
   const ctx = { companies: companies || [], statuses };
@@ -2661,6 +2820,20 @@ function StudentsList({ activeGroup, students, companies, statuses, scheduleStat
     .filter((s) => activeFilter.test(s, ctx))
     .filter((s) => normalize(`${s.nom} ${s.cognoms}`).includes(normalize(query)))
     .sort(sortByCognomsNom);
+
+  // Seguiment del lliurament del document de protecció de dades (tot el grup).
+  const rgpdPend = students.filter((s) => !rgpdLliurat(s));
+  const rgpdDone = students.length - rgpdPend.length;
+  const rgpdPct = students.length ? Math.round((rgpdDone / students.length) * 100) : 100;
+  const rgpdEmails = Array.from(new Set(rgpdPend.flatMap(rgpdContactEmails)));
+  const rgpdSinCorreu = rgpdPend.filter((s) => rgpdContactEmails(s).length === 0).length;
+  const rgpdMailto = `mailto:?bcc=${encodeURIComponent(rgpdEmails.join(","))}&subject=${encodeURIComponent("Document informatiu de protecció de dades pendent")}&body=${encodeURIComponent("Bon dia,\n\nEns consta que encara no s'ha lliurat (o no ens ha arribat signat) el document informatiu de protecció de dades. Si us plau, feu-nos-el arribar com abans millor.\n\nGràcies.")}`;
+  async function copyRgpdEmails() {
+    const text = rgpdEmails.join(", ");
+    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2500); }
+    catch (e) { window.prompt("Copia aquestes adreces (Ctrl+C):", text); }
+  }
+  const visiblePendents = filtered.filter((s) => !rgpdLliurat(s));
 
   function handleTrash(e, s) {
     e.stopPropagation();
@@ -2710,6 +2883,49 @@ function StudentsList({ activeGroup, students, companies, statuses, scheduleStat
         />
       </div>
 
+      {students.length > 0 && (
+        <Card className={`p-4 mb-4 ${rgpdPend.length > 0 ? "border-red-200" : "border-green-200"}`}>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-[220px] flex-1">
+              <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                {rgpdPend.length > 0 ? <ShieldAlert size={16} className="text-red-500" /> : <ShieldCheck size={16} className="text-green-600" />}
+                Document de protecció de dades: {rgpdDone}/{students.length} lliurats
+              </p>
+              <div className="h-2 rounded-full bg-slate-100 mt-2 overflow-hidden">
+                <div className={`h-full ${rgpdPend.length > 0 ? "bg-orange-400" : "bg-green-500"}`} style={{ width: `${rgpdPct}%` }} />
+              </div>
+              {rgpdPend.length > 0 && rgpdSinCorreu > 0 && (
+                <p className="text-xs text-slate-400 mt-1.5">{rgpdSinCorreu} dels pendents no tenen cap correu registrat: caldrà reclamar-ho en persona.</p>
+              )}
+            </div>
+            {rgpdPend.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {activeFilter.id !== "rgpdPendent" && (
+                  <button onClick={() => onFilterChange("rgpdPendent")} className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 text-xs font-medium hover:bg-red-50">
+                    Veure els {rgpdPend.length} pendents
+                  </button>
+                )}
+                {rgpdEmails.length > 0 && (
+                  <>
+                    <a href={rgpdMailto} className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-xs font-medium hover:bg-slate-50 inline-flex items-center gap-1">
+                      <Mail size={13} /> Reclama per correu
+                    </a>
+                    <button onClick={copyRgpdEmails} className="px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 text-xs font-medium hover:bg-slate-50 inline-flex items-center gap-1">
+                      <Copy size={13} /> {copied ? "Copiats!" : "Copia els correus"}
+                    </button>
+                  </>
+                )}
+                {activeFilter.id === "rgpdPendent" && visiblePendents.length > 0 && (
+                  <button onClick={() => onSetRgpdBulk(visiblePendents.map((s) => s.id))} className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs font-medium hover:bg-green-700">
+                    Marca els {visiblePendents.length} de la llista com a lliurats
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
       <FilterChips
         groups={[
           { title: "Col·locació", filters: STUDENT_FILTERS.filter((f) => f.group === "col") },
@@ -2742,6 +2958,16 @@ function StudentsList({ activeGroup, students, companies, statuses, scheduleStat
                   {st.blocks.length > 0 && <Badge tone="red">{st.blocks.length} bloqueig</Badge>}
                   {sc.complete ? <Badge tone="green">FCT completes</Badge> : <Badge tone="orange">FCT incompletes</Badge>}
                   {sc.conflicts > 0 && <Badge tone="orange">Conflicte</Badge>}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onSetRgpd(s.id, !rgpdLliurat(s)); }}
+                    title={rgpdLliurat(s) ? "Document de protecció de dades lliurat — clica per desmarcar" : "Clica per marcar el document de protecció de dades com a lliurat"}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+                      rgpdLliurat(s) ? "bg-green-50 text-green-700 border-green-200 hover:bg-green-100" : "bg-red-50 text-red-600 border-red-200 hover:bg-red-100"
+                    }`}
+                  >
+                    {rgpdLliurat(s) ? <ShieldCheck size={12} /> : <ShieldAlert size={12} />}
+                    {rgpdLliurat(s) ? `RGPD ${fmtDataCa(s.rgpd.data)}` : "RGPD pendent"}
+                  </button>
                 </div>
               </Card>
             </div>
@@ -2757,7 +2983,7 @@ function StudentsList({ activeGroup, students, companies, statuses, scheduleStat
 /* 11. FITXA INDIVIDUAL                                                   */
 /* ---------------------------------------------------------------------- */
 
-function StudentDetail({ student, status, raWeights, moduleCourse, schedule, scheduleStatus, classGrid, classTemplate, companies, assignedCompanyId, onAssignCompany, onBack, onTrash, onUpdateStudent, onUpdateNote, onUpdateNotaEmpresa, onUpdateSchedule, onAddPeriod, onRemovePeriod, onUpdatePeriod, onToggleTick, onAddInterview, onUpdateInterview, onDeleteInterview, onAddIncident, onUpdateIncident, onDeleteIncident }) {
+function StudentDetail({ onSetRgpd, student, status, raWeights, moduleCourse, schedule, scheduleStatus, classGrid, classTemplate, companies, assignedCompanyId, onAssignCompany, onBack, onTrash, onUpdateStudent, onUpdateNote, onUpdateNotaEmpresa, onUpdateSchedule, onAddPeriod, onRemovePeriod, onUpdatePeriod, onToggleTick, onAddInterview, onUpdateInterview, onDeleteInterview, onAddIncident, onUpdateIncident, onDeleteIncident }) {
   const [section, setSection] = useState("dades");
   const age = calcAge(student.dataNaixement);
   const isMinor = age != null && age < 18;
@@ -2806,6 +3032,7 @@ function StudentDetail({ student, status, raWeights, moduleCourse, schedule, sch
           )}
           {!student.noFaPractiques && (scheduleStatus.complete ? <Badge tone="green" icon={CheckCircle2}>Hores FCT completes</Badge> : <Badge tone="orange" icon={Clock}>Mancança d'hores FCT</Badge>)}
           {obertIncidents > 0 && <Badge tone="red" icon={ShieldAlert}>{obertIncidents} incidència(es) oberta(es)</Badge>}
+          {rgpdLliurat(student) ? <Badge tone="green" icon={ShieldCheck}>RGPD lliurat</Badge> : <Badge tone="red" icon={ShieldAlert}>RGPD pendent de lliurar</Badge>}
         </div>
       </div>
 
@@ -2819,11 +3046,12 @@ function StudentDetail({ student, status, raWeights, moduleCourse, schedule, sch
           >
             <sec.icon size={15} /> {sec.label}
             {sec.id === "seguiment" && obertIncidents > 0 && <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block" />}
+            {sec.id === "dades" && !rgpdLliurat(student) && <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block" title="Document de protecció de dades pendent" />}
           </button>
         ))}
       </div>
 
-      {section === "dades" && <PersonalDataSection student={student} isMinor={isMinor} onUpdateStudent={onUpdateStudent} />}
+      {section === "dades" && <PersonalDataSection student={student} isMinor={isMinor} onUpdateStudent={onUpdateStudent} onSetRgpd={onSetRgpd} />}
       {section === "academic" && (
         <AcademicSection student={student} status={status} raWeights={raWeights} moduleCourse={moduleCourse} onUpdateNote={onUpdateNote} onUpdateStudent={onUpdateStudent} />
       )}
@@ -2981,7 +3209,54 @@ function SelectField({ label, value, onChange, options }) {
   );
 }
 
-function PersonalDataSection({ student, isMinor, onUpdateStudent }) {
+function RgpdCard({ student, isMinor, onSetRgpd, onUpdateStudent }) {
+  const r = student.rgpd || {};
+  const done = rgpdLliurat(student);
+  const patch = (p) => onUpdateStudent({ rgpd: { ...r, ...p } });
+  return (
+    <Card className={`p-5 border-2 ${done ? "border-green-200 bg-green-50/40" : "border-red-200 bg-red-50/40"}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          {done ? <ShieldCheck size={22} className="text-green-600 mt-0.5 shrink-0" /> : <ShieldAlert size={22} className="text-red-500 mt-0.5 shrink-0" />}
+          <div>
+            <p className="text-sm font-medium text-slate-800">Document informatiu de protecció de dades</p>
+            <p className={`text-xs mt-0.5 ${done ? "text-green-700" : "text-red-600"}`}>
+              {done ? `Lliurat el ${fmtDataCa(r.data)}${r.per ? " · registrat per " + r.per : ""}` : "Pendent de lliurar"}
+            </p>
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+          <input
+            type="checkbox" checked={done} onChange={(e) => onSetRgpd(e.target.checked)}
+            className="w-4 h-4 rounded border-slate-300 text-green-600 focus:ring-green-300"
+          />
+          Lliurat
+        </label>
+      </div>
+      {isMinor && <p className="text-xs text-slate-500 mt-2">Alumne/a menor d'edat: el document s'ha de lliurar (i recollir-ne el rebut signat) als pares o tutors legals.</p>}
+      {done && (
+        <>
+          <div className="grid sm:grid-cols-3 gap-3 mt-4">
+            <label className="block">
+              <span className="text-xs text-slate-400">Data de lliurament</span>
+              <input
+                type="date" value={r.data || ""} onChange={(e) => patch({ data: e.target.value })}
+                className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 bg-white focus:outline-none focus:ring-2 focus:ring-sky-300"
+              />
+            </label>
+            <SelectField label="Mitjà de lliurament" value={r.mitja} onChange={(v) => patch({ mitja: v })} options={RGPD_MITJANS} />
+            <Field label="Nota" value={r.nota} onChange={(v) => patch({ nota: v })} />
+          </div>
+          <div className="mt-2">
+            <DocumentAttachRow label="Rebut signat (opcional)" doc={r.rebut} onAttach={(file) => patch({ rebut: file })} onRemove={() => patch({ rebut: null })} />
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function PersonalDataSection({ student, isMinor, onUpdateStudent, onSetRgpd }) {
   const groups = [
     { title: "Identificació i contacte", fields: ["nom", "cognoms", "dni", "idalu", "telefon", "emailPersonal", "emailInstitut"] },
     { title: "Seguretat social i dades mèdiques", fields: ["nass", "inss"] },
@@ -2997,6 +3272,7 @@ function PersonalDataSection({ student, isMinor, onUpdateStudent }) {
   };
   return (
     <div className="space-y-5">
+      <RgpdCard student={student} isMinor={isMinor} onSetRgpd={onSetRgpd} onUpdateStudent={onUpdateStudent} />
       {groups.map((g) => (
         <Card key={g.title} className="p-5">
           <p className="text-sm font-medium text-slate-700 mb-3">{g.title}</p>
@@ -3853,9 +4129,9 @@ function PracticumSection({ student, schedule, scheduleStatus, classGrid, compan
             const oldCompany = companies.find((c) => c.id === assignedCompanyId);
             const newCompany = newId ? companies.find((c) => c.id === newId) : null;
             if (oldCompany && !newCompany) {
-              if (!window.confirm(`Desassignar ${student.nom} ${student.cognoms} de ${oldCompany.nom}? Es perdrà l'etapa i les signatures registrades.`)) return;
+              if (!window.confirm(`Desassignar ${student.nom} ${student.cognoms} de ${oldCompany.nom}? L'etapa i les signatures es conserven, per si el/la tornes a assignar a aquesta empresa.`)) return;
             } else if (oldCompany && newCompany && oldCompany.id !== newCompany.id) {
-              if (!window.confirm(`Moure ${student.nom} ${student.cognoms} de ${oldCompany.nom} a ${newCompany.nom}? Es perdrà l'etapa i les signatures que tingués a l'empresa anterior.`)) return;
+              if (!window.confirm(`Moure ${student.nom} ${student.cognoms} de ${oldCompany.nom} a ${newCompany.nom}? A l'empresa nova començarà des de la primera etapa; l'etapa i les signatures de l'anterior es conserven, per si el/la hi tornes.`)) return;
             }
             onAssignCompany(newId);
           }}
@@ -4310,7 +4586,7 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-sm font-medium text-slate-700">{s.nom} {s.cognoms} <span className="text-xs text-slate-400 font-normal">({s.grup || "ADM2"})</span></p>
                         <button
-                          onClick={() => { if (window.confirm(`Desassignar ${s.nom} ${s.cognoms} de ${c.nom}? Es perdrà l'etapa i les signatures que hi hagi registrades per a aquesta empresa.`)) onToggleAssign(s.id); }}
+                          onClick={() => { if (window.confirm(`Desassignar ${s.nom} ${s.cognoms} de ${c.nom}? L'etapa i les signatures es conserven, per si el/la tornes a assignar a aquesta empresa.`)) onToggleAssign(s.id); }}
                           className="text-xs text-red-500 hover:underline"
                         >
                           Desassigna
@@ -4370,7 +4646,7 @@ function CompanyCard({ company: c, students, statuses, companies, activeGroup, e
                       <button
                         key={s.id}
                         onClick={() => {
-                          if (elsewhere && !window.confirm(`${s.nom} ${s.cognoms} ja és candidat/a a "${elsewhereCompany.nom}". Vols moure'l/la a "${c.nom}"? Es perdrà l'etapa i les signatures que tingués a l'altra empresa.`)) return;
+                          if (elsewhere && !window.confirm(`${s.nom} ${s.cognoms} ja és candidat/a a "${elsewhereCompany.nom}". Vols moure'l/la a "${c.nom}"? A l'empresa nova començarà des de la primera etapa; l'etapa i les signatures de l'altra es conserven, per si el/la hi tornes.`)) return;
                           onToggleAssign(s.id);
                         }}
                         title={elsewhere ? `Assignat/da a ${elsewhereCompany.nom} — es reassignarà aquí` : ""}
@@ -4458,7 +4734,7 @@ function CandidaciesTab({ activeGroup, students, companies, onSelectStudent, onS
                   </button>
                 ))}
                 <button
-                  onClick={() => { if (window.confirm(`Desassignar ${student.nom} ${student.cognoms} de ${company.nom}? Es perdrà l'etapa i les signatures registrades.`)) onToggleAssign(company.id, student.id); }}
+                  onClick={() => { if (window.confirm(`Desassignar ${student.nom} ${student.cognoms} de ${company.nom}? L'etapa i les signatures es conserven, per si el/la tornes a assignar a aquesta empresa.`)) onToggleAssign(company.id, student.id); }}
                   className="px-2.5 py-1 rounded-full text-xs border border-red-200 text-red-500 hover:bg-red-50"
                 >
                   Desassigna
